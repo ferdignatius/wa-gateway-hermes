@@ -1,11 +1,11 @@
-import { defineConfig } from 'prisma/config';
+import { defineConfig, env } from 'prisma/config';
 
-// Prisma v7 config
 export default defineConfig({
     schema: './prisma/schema.prisma',
+    datasource: {
+        url: env('DATABASE_URL'),
+    },
     migrations: {
         path: './prisma/migrations',
-        seed: './prisma/seed.ts',
-        // Tidak perlu dataSource, karena akan dibaca dari env.DATABASE_URL
-    }
+    },
 });

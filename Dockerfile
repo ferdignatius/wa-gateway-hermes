@@ -7,12 +7,9 @@ WORKDIR /app
 RUN npm install -g pnpm
 
 COPY package.json pnpm-lock.yaml* pnpm-workspace.yaml* ./
-# Menggunakan mirror registry.npmmirror.com untuk download super cepat di server Indonesia
-RUN pnpm install --frozen-lockfile --registry=https://registry.npmmirror.com --config.network-timeout=1000000 --config.fetch-retries=5
+RUN pnpm install --frozen-lockfile --config.network-timeout=600000 --config.fetch-retries=5 --network-concurrency=1
 
 COPY prisma ./prisma/
-# Gunakan mirror binaries Prisma untuk mempercepat download engine
-ENV PRISMA_ENGINES_MIRROR=https://registry.npmmirror.com/mirrors/prisma
 # Generate Prisma Client di stage builder
 RUN pnpm exec prisma generate
 
@@ -45,7 +42,7 @@ RUN npm install -g pnpm
 
 # Copy package files dan install hanya production dependencies
 COPY package.json pnpm-lock.yaml* pnpm-workspace.yaml* ./
-RUN pnpm install --prod --frozen-lockfile --registry=https://registry.npmmirror.com --config.network-timeout=1000000 --config.fetch-retries=5
+RUN pnpm install --prod --frozen-lockfile --config.network-timeout=600000 --config.fetch-retries=5 --network-concurrency=1
 
 # ── Prisma: Copy engine binaries + client ──────────────────────────────────
 # Salin engine biner yang sudah di-generate di builder (openssl 3.x / bullseye)

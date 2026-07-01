@@ -29,6 +29,7 @@ services:
     environment:
       API_SERVER_KEY: ${HERMES_API_KEY}
       GATEWAY_ALLOW_ALL_USERS: "true"
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY}
       API_SERVER_HOST: "0.0.0.0"
     volumes:
       - hermes_sessions:/root/.hermes/sessions # Global session tanpa profil spesifik
@@ -44,9 +45,7 @@ services:
 
   # ── WA Gateway (Node.js + Chromium) ─────────────────────────────────────
   wa-gateway:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    image: ferdignatius/wa-gateway:latest
     container_name: wagateway-app
     ports:
       - "127.0.0.1:4849:4849"
@@ -54,7 +53,7 @@ services:
     # sehingga Chromium menggunakan /tmp (bukan /dev/shm) — shm_size tidak berpengaruh.
     environment:
       NODE_ENV: production
-      DATABASE_URL: "postgresql://${POSTGRES_USER:-admin}:${POSTGRES_PASSWORD:-changeme}@postgres-db:5432/${POSTGRES_DB:-wagateway}?schema=public"
+      DATABASE_URL: "postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres-db:5432/${POSTGRES_DB:-wagateway}?schema=public"
       HERMES_API_URL: ${HERMES_API_URL}
       HERMES_API_KEY: ${HERMES_API_KEY}
       HERMES_SECRET: ${HERMES_SECRET}
@@ -69,6 +68,7 @@ services:
         condition: service_started # Hermes tidak punya healthcheck; minimal pastikan container jalan
     volumes:
       - wa_auth:/app/.wwebjs_auth
+      - ./prisma.config.ts:/app/prisma.config.ts
       - wa_cache:/app/.wwebjs_cache
     restart: unless-stopped
     healthcheck:
