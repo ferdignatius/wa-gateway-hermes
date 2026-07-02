@@ -35,13 +35,14 @@ services:
     volumes:
       - hermes_sessions:/root/.hermes/sessions
       - ./config.yaml:/app/config.yaml
-    entrypoint: >
-      bash -c "
+    entrypoint:
+      - /bin/bash
+      - -c
+      - |
         pip install --no-cache-dir hermes-agent &&
         mkdir -p /root/.hermes &&
-        sed "s/key: YOUR_HERMES_API_KEY/key: $${API_SERVER_KEY}/g" /app/config.yaml > /root/.hermes/config.yaml &&
+        sed "s|key: YOUR_HERMES_API_KEY|key: $${API_SERVER_KEY}|g" /app/config.yaml > /root/.hermes/config.yaml &&
         hermes gateway run --replace
-      "
     restart: unless-stopped
     networks:
       - default
@@ -57,7 +58,7 @@ services:
       - 127.0.0.1:4849:4849
     environment:
       NODE_ENV: production
-      DATABASE_URL: "postgresql://${POSTGRES_USER}:***@postgres-db:5432/${POSTGRES_DB:-wagateway}?schema=public"
+      DATABASE_URL: "postgresql://${POSTGRES_USER}:hermesbosferdi@postgres-db:5432/${POSTGRES_DB:-wagateway}?schema=public"
       HERMES_API_URL: ${HERMES_API_URL}
       HERMES_API_KEY: ${HERMES_API_KEY}
       HERMES_SECRET: ${HERMES_SECRET}
