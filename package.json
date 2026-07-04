@@ -8,7 +8,7 @@
     "start": "node dist/index.js",
     "dev": "nodemon --exec ts-node src/index.ts",
     "db:migrate": "prisma migrate deploy",
-    "db:seed": "ts-node prisma/seed.ts",
+    "db:seed": "node prisma/seed.js",
     "db:studio": "prisma studio"
   },
   "repository": {
@@ -50,5 +50,8 @@
     "nodemon": "^3.1.14",
     "ts-node": "^10.9.2",
     "typescript": "^6.0.3"
+  },
+  "prisma": {
+    "seed": "node prisma/seed.js"
   }
 }

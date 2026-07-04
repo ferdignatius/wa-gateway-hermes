@@ -7,7 +7,6 @@ import { callHermes } from './hermes/adapter';
 import { HermesPayload } from './hermes/types';
 import { sendReply, startTypingLoop } from './wa/reply';
 import { createExpressApp } from './server/pushEndpoint';
-import { createWsServer } from './server/wsServer';
 import { prisma } from './lib/prisma';
 
 // Interval untuk log pruning (hapus log > 30 hari)
@@ -189,13 +188,12 @@ async function main() {
         }
     });
 
-    // 3. Buat HTTP server (Express REST API + WebSocket di port yang sama)
+    // 3. Buat HTTP server (Express REST API + SSE di port yang sama)
     const expressApp = createExpressApp(client);
     const httpServer = http.createServer(expressApp);
-    createWsServer(httpServer);
 
     httpServer.listen(config.expressPort, () => {
-        console.log(`[Server] HTTP + WebSocket running on port ${config.expressPort}`);
+        console.log(`[Server] HTTP running on port ${config.expressPort} (with SSE support)`);
     });
 
     // 4. Log pruning — hapus ActivityLog > 30 hari, jalankan setiap 24 jam

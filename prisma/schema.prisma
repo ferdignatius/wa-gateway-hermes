@@ -28,10 +28,12 @@ model User {
 
 // Tabel akun admin untuk Admin Panel
 model AdminUser {
-  id           String   @id @default(uuid())
-  username     String   @unique
+  id           String    @id @default(uuid())
+  username     String    @unique
   passwordHash String
-  createdAt    DateTime @default(now())
+  createdAt    DateTime  @default(now())
+  otpCode      String?
+  otpExpiresAt DateTime?
 }
 
 // Tabel grup WhatsApp yang diotorisasi

@@ -1,7 +1,6 @@
 import { Client, LocalAuth } from "whatsapp-web.js";
 import qrcode from 'qrcode-terminal';
-import { broadcast } from '../server/wsServer';
-import { setWaStatus } from '../server/adminRouter';
+import { broadcast, setWaStatus } from '../server/adminRouter';
 
 // Static Desktop Chrome userAgent — mencegah fingerprinting/ban
 const DESKTOP_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
