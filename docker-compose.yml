@@ -35,8 +35,7 @@ services:
 
   # ── WA Gateway (Node.js + Chromium) ─────────────────────────────────────────
   wa-gateway:
-    build: .
-    image: wa-gateway:latest  # tag lokal, tidak perlu push ke registry
+    image: ferdignatius/wa-gateway:latest
     container_name: wabot-gateway
     environment:
       NODE_ENV: production

@@ -37,17 +37,12 @@ ENV NODE_ENV=production
 
 WORKDIR /app
 
-# Install pnpm
-RUN npm install -g pnpm
-
-# Copy package files dan install hanya production dependencies
+# Copy package files
 COPY package.json pnpm-lock.yaml* pnpm-workspace.yaml* ./
-RUN pnpm install --prod --frozen-lockfile --config.network-timeout=600000 --config.fetch-retries=5 --network-concurrency=1
 
-# ── Prisma: Copy engine binaries + client ──────────────────────────────────
-# Salin engine biner yang sudah di-generate di builder (openssl 3.x / bullseye)
-COPY --from=builder /app/node_modules/.prisma        ./node_modules/.prisma
-COPY --from=builder /app/node_modules/@prisma/client ./node_modules/@prisma/client
+# Menyalin seluruh node_modules dari builder (untuk menghemat bandwidth dan mencegah error install)
+COPY --from=builder /app/node_modules ./node_modules
+
 
 # ── App artifacts ──────────────────────────────────────────────────────────
 # Copy hasil compile dan skema database
