@@ -13,8 +13,8 @@ services:
     image: nousresearch/hermes-agent
     container_name: wabot-hermes
     command: ["gateway", "run"]
-    environment:
-      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY}
+    # Tidak perlu env vars — semua konfigurasi (API key, model) sudah
+    # tersimpan di volume hermes-data via setup wizard.
     volumes:
       - hermes_sessions:/opt/data
     networks:
