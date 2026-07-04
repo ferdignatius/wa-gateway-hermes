@@ -6,28 +6,17 @@
 
 services:
   # ── Hermes Agent AI ──────────────────────────────────────────────────────────
-  # Watchtower TIDAK dipakai karena Hermes bukan image custom yang perlu auto-update.
-  # Update dilakukan manual via Portainer saat ada perubahan config.yaml.
+  # Menggunakan official image NousResearch. Port default: 8642.
+  # Konfigurasi agent (API key, model, dll) diatur via setup wizard sekali di server:
+  #   docker run -it --rm -v ~/.hermes:/opt/data nousresearch/hermes-agent setup
   hermes-agent:
-    image: nikolaik/python-nodejs:python3.12-nodejs22
+    image: nousresearch/hermes-agent
     container_name: wabot-hermes
+    command: ["gateway", "run"]
     environment:
-      API_SERVER_KEY: ${HERMES_API_KEY}
-      GATEWAY_ALLOW_ALL_USERS: "true"
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY}
-      API_SERVER_HOST: "0.0.0.0"
-      API_SERVER_PORT: 8689
     volumes:
-      - hermes_sessions:/root/.hermes/sessions
-      - ./config.yaml:/app/config.yaml
-    entrypoint:
-      - /bin/bash
-      - -c
-      - |
-        pip install --no-cache-dir hermes-agent &&
-        mkdir -p /root/.hermes &&
-        sed "s|key: YOUR_HERMES_API_KEY|key: $${API_SERVER_KEY}|g" /app/config.yaml > /root/.hermes/config.yaml &&
-        hermes gateway run --replace
+      - hermes_sessions:/opt/data
     networks:
       - proxy-tier  # Diperlukan agar bisa akses internet → OpenRouter API
       - data-tier   # Komunikasi internal dengan wa-gateway
@@ -58,7 +47,7 @@ services:
       REDIS_URL: "redis://redis-queue:6379"
 
       # ── Hermes Agent (service internal di stack ini) ──────────────────────────
-      HERMES_API_URL: "http://wabot-hermes:8689/v1/responses"
+      HERMES_API_URL: "http://wabot-hermes:8642/v1/responses"
       HERMES_API_KEY: ${HERMES_API_KEY}
       HERMES_SECRET: ${HERMES_SECRET}
 
@@ -108,7 +97,7 @@ volumes:
   wa_cache:
     name: wabot-wa-cache
   hermes_sessions:
-    name: wabot-hermes-sessions
+    name: wabot-hermes-data
 
 networks:
   proxy-tier:
