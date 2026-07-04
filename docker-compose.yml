@@ -97,7 +97,7 @@ volumes:
   wa_cache:
     name: wabot-wa-cache
   hermes_sessions:
-    name: wabot-hermes-data
+    name: hermes-data
 
 networks:
   proxy-tier:
