@@ -197,7 +197,15 @@ router.post('/auth/reset-password', async (req: Request, res: Response) => {
 
 // Status WA client disimpan in-memory, di-update dari client.ts
 let waStatus: 'connecting' | 'connected' | 'disconnected' | 'qr' = 'connecting';
-export function setWaStatus(s: typeof waStatus) { waStatus = s; }
+let latestQr: string | null = null;
+
+export function setWaStatus(s: typeof waStatus) { 
+    waStatus = s; 
+    if (s !== 'qr') {
+        latestQr = null;
+    }
+}
+export function setLatestQr(qr: string | null) { latestQr = qr; }
 
 // SSE Clients set & broadcast
 interface SseClient {
@@ -235,6 +243,9 @@ router.get('/status/sse', (req: Request, res: Response) => {
 
         // Kirim status awal
         res.write(`data: ${JSON.stringify({ type: 'status', data: waStatus })}\n\n`);
+        if (waStatus === 'qr' && latestQr) {
+            res.write(`data: ${JSON.stringify({ type: 'qr', data: latestQr })}\n\n`);
+        }
 
         const client = { id: Date.now(), res };
         sseClients.add(client);
@@ -445,7 +456,7 @@ router.get('/logs', async (req: AdminRequest, res: Response) => {
 
 // ── GET /admin/status ───────────────────────────────────────────────────────
 router.get('/status', async (_req: AdminRequest, res: Response) => {
-    return res.json({ success: true, data: { waStatus } });
+    return res.json({ success: true, data: { waStatus, qrCode: latestQr } });
 });
 
 export default router;

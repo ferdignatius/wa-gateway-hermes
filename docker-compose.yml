@@ -1,37 +1,22 @@
-services:
-  # ── PostgreSQL Database ──────────────────────────────────────────────────
-  postgres-db:
-    image: postgres:17-alpine
-    container_name: wagateway-postgres
-    environment:
-      POSTGRES_USER: ${POSTGRES_USER:-admin}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
-      POSTGRES_DB: ${POSTGRES_DB:-wagateway}
-    ports:
-      - "127.0.0.1:5489:5432"
-    volumes:
-      - pgdata:/var/lib/postgresql/data
-    restart: unless-stopped
-    healthcheck:
-      test: [ "CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-admin} -d $${POSTGRES_DB:-wagateway}" ]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    networks:
-      - default
-      - proxy-network
+# docker-compose.yml — STACK 3 (APPS): wa-gateway
+# Asumsi:
+#  - postgres-master, redis-queue, rabbitmq-queue sudah hidup di STACK 4 (CORE)
+#  - Kedua jaringan eksternal (proxy-tier, data-tier) sudah dibuat sebelumnya
+#  - Image di-build & push ke registry sebelum deploy (lihat README.md)
 
-  # ── Hermes Agent ─────────────────────────────────────────────────────────
+services:
+  # ── Hermes Agent AI ──────────────────────────────────────────────────────────
+  # Watchtower TIDAK dipakai karena Hermes bukan image custom yang perlu auto-update.
+  # Update dilakukan manual via Portainer saat ada perubahan config.yaml.
   hermes-agent:
     image: nikolaik/python-nodejs:python3.12-nodejs22
-    container_name: wagateway-hermes
-    ports:
-      - "127.0.0.1:8689:8689"
+    container_name: wabot-hermes
     environment:
       API_SERVER_KEY: ${HERMES_API_KEY}
       GATEWAY_ALLOW_ALL_USERS: "true"
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY}
       API_SERVER_HOST: "0.0.0.0"
+      API_SERVER_PORT: 8689
     volumes:
       - hermes_sessions:/root/.hermes/sessions
       - ./config.yaml:/app/config.yaml
@@ -43,41 +28,58 @@ services:
         mkdir -p /root/.hermes &&
         sed "s|key: YOUR_HERMES_API_KEY|key: $${API_SERVER_KEY}|g" /app/config.yaml > /root/.hermes/config.yaml &&
         hermes gateway run --replace
-    restart: unless-stopped
     networks:
-      - default
-      - proxy-network
-    labels:
-      - "com.centurylinklabs.watchtower.enable=true"
+      - proxy-tier  # Diperlukan agar bisa akses internet → OpenRouter API
+      - data-tier   # Komunikasi internal dengan wa-gateway
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+        reservations:
+          memory: 512M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    restart: unless-stopped
 
-  # ── WA Gateway (Node.js + Chromium) ─────────────────────────────────────
+  # ── WA Gateway (Node.js + Chromium) ─────────────────────────────────────────
   wa-gateway:
     image: ferdignatius/wa-gateway:latest
-    container_name: wagateway-app
-    ports:
-      - 127.0.0.1:4849:4849
+    container_name: wabot-gateway
     environment:
       NODE_ENV: production
-      DATABASE_URL: "postgresql://${POSTGRES_USER}:hermesbosferdi@postgres-db:5432/${POSTGRES_DB:-wagateway}?schema=public"
-      HERMES_API_URL: ${HERMES_API_URL}
+
+      # ── Database (postgres-master dari STACK 4 via data-tier) ────────────────
+      DATABASE_URL: "postgresql://${CORE_DB_USER}:${CORE_DB_PASSWORD}@postgres-master:5432/wagateway?schema=public"
+
+      # ── Redis (redis-queue dari STACK 4 via data-tier) ────────────────────────
+      REDIS_URL: "redis://redis-queue:6379"
+
+      # ── Hermes Agent (service internal di stack ini) ──────────────────────────
+      HERMES_API_URL: "http://wabot-hermes:8689/v1/responses"
       HERMES_API_KEY: ${HERMES_API_KEY}
       HERMES_SECRET: ${HERMES_SECRET}
+
+      # ── App Config ────────────────────────────────────────────────────────────
       EXPRESS_PORT: 4849
       JWT_SECRET: ${JWT_SECRET}
-      ALLOWED_ORIGIN: ${ALLOWED_ORIGIN:-http://localhost:3000}
+      # URL production Admin Panel di Vercel — dipakai untuk validasi CORS
+      ALLOWED_ORIGIN: ${ALLOWED_ORIGIN}
       PUPPETEER_EXECUTABLE_PATH: /usr/bin/chromium
+
     depends_on:
-      postgres-db:
-        condition: service_healthy
       hermes-agent:
         condition: service_started
     volumes:
       - wa_auth:/app/.wwebjs_auth
-      - ./prisma.config.ts:/app/prisma.config.ts
       - wa_cache:/app/.wwebjs_cache
-    restart: unless-stopped
+    networks:
+      - proxy-tier  # NPM routing trafik dari Vercel/internet masuk ke sini
+      - data-tier   # Akses ke postgres-master & redis-queue dari CORE
     healthcheck:
-      test: [ "CMD-SHELL", "curl -sf http://localhost:4849/health || exit 1" ]
+      test: ["CMD-SHELL", "curl -sf http://localhost:4849/health || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -85,28 +87,31 @@ services:
     deploy:
       resources:
         limits:
-          memory: 1.5G
+          memory: 1G
         reservations:
           memory: 512M
-    networks:
-      - default
-      - proxy-network
-    labels:
-      - "com.centurylinklabs.watchtower.enable=true"
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    restart: unless-stopped
+    # Watchtower di STACK 2 (OPS) akan auto-detect image baru secara default.
+    # Label di bawah hanya diperlukan jika Watchtower dikonfigurasi mode
+    # "com.centurylinklabs.watchtower.enable=true" (opt-in). Aktifkan jika perlu:
+    # labels:
+    #   - "com.centurylinklabs.watchtower.enable=true"
 
 volumes:
-  pgdata:
-    name: wagateway-pgdata
   wa_auth:
-    name: wagateway-wa-auth
+    name: wabot-wa-auth
   wa_cache:
-    name: wagateway-wa-cache
+    name: wabot-wa-cache
   hermes_sessions:
-    name: wagateway-hermes-sessions
+    name: wabot-hermes-sessions
 
 networks:
-  default:
-    name: wa-gateway-hermes_default
-  proxy-network:
+  proxy-tier:
     external: true
-    name: proxy-network
+  data-tier:
+    external: true

@@ -53,6 +53,9 @@ COPY --from=builder /app/node_modules/@prisma/client ./node_modules/@prisma/clie
 # Copy hasil compile dan skema database
 COPY --from=builder /app/dist   ./dist
 COPY --from=builder /app/prisma ./prisma
+# prisma.config.ts tidak mengandung secret (hanya baca DATABASE_URL dari env)
+# Aman di-copy langsung ke image supaya image bersifat self-contained
+COPY prisma.config.ts ./prisma.config.ts
 
 # ── Permission & Security ──────────────────────────────────────────────────
 # Buat direktori mount-point volume SEBELUM ganti USER agar Docker

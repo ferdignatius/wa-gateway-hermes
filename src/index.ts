@@ -8,6 +8,8 @@ import { HermesPayload } from './hermes/types';
 import { sendReply, startTypingLoop } from './wa/reply';
 import { createExpressApp } from './server/pushEndpoint';
 import { prisma } from './lib/prisma';
+import { redis } from './lib/redis';
+import { checkRateLimit, checkDedup } from './lib/rateLimiter';
 
 // Interval untuk log pruning (hapus log > 30 hari)
 const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
@@ -51,6 +53,16 @@ async function main() {
             }
 
             console.log(`[GROUP] chat="${chat.name}" sender=${senderId} role=${user.role}`);
+
+            // ── Redis Guards ────────────────────────────────────────────
+            const isNewMsg = await checkDedup(message.id._serialized);
+            if (!isNewMsg) return;
+
+            const allowed = await checkRateLimit(senderId);
+            if (!allowed) {
+                await message.reply('⏱️ Terlalu banyak pesan. Silakan tunggu sebentar.').catch(() => {});
+                return;
+            }
 
             enqueue(chat.id._serialized, async () => {
                 const stopTyping = startTypingLoop(chat);
@@ -130,6 +142,16 @@ async function main() {
             }
 
             console.log(`[DM] sender=${senderId} role=owner`);
+
+            // ── Redis Guards ────────────────────────────────────────────
+            const isNewDm = await checkDedup(message.id._serialized);
+            if (!isNewDm) return;
+
+            const dmAllowed = await checkRateLimit(senderId);
+            if (!dmAllowed) {
+                await chat.sendMessage('⏱️ Terlalu banyak pesan. Silakan tunggu sebentar.').catch(() => {});
+                return;
+            }
 
             enqueue(chat.id._serialized, async () => {
                 const stopTyping = startTypingLoop(chat);
@@ -212,6 +234,7 @@ async function main() {
         console.log('[Server] Shutting down gracefully...');
         await client.destroy().catch(() => {});
         await prisma.$disconnect().catch(() => {});
+        await redis.quit().catch(() => {});
         process.exit(0);
     };
 

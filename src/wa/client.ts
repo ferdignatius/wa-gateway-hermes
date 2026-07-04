@@ -1,6 +1,6 @@
 import { Client, LocalAuth } from "whatsapp-web.js";
 import qrcode from 'qrcode-terminal';
-import { broadcast, setWaStatus } from '../server/adminRouter';
+import { broadcast, setWaStatus, setLatestQr } from '../server/adminRouter';
 
 // Static Desktop Chrome userAgent — mencegah fingerprinting/ban
 const DESKTOP_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
@@ -42,6 +42,7 @@ export async function initClient(maxRetries: number = 5): Promise<void> {
         console.log('[WA] QR Code generated — waiting for scan...');
         qrcode.generate(qr, { small: true });
         setWaStatus('qr');
+        setLatestQr(qr);
         broadcast({ type: 'qr', data: qr });
         broadcast({ type: 'status', data: 'qr' });
     });
