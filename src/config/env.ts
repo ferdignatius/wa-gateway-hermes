@@ -5,6 +5,7 @@ export interface AppConfig {
     hermesApiUrl: string;
     hermesApiKey: string;
     hermesSecret: string;
+    hermesProfile?: string;
     expressPort: number;
     ownerNumbers: string[];
     allowedUsers: string[];
@@ -54,6 +55,7 @@ export function loadConfig(): AppConfig {
         hermesApiUrl: process.env.HERMES_API_URL!,
         hermesApiKey: process.env.HERMES_API_KEY!,
         hermesSecret: process.env.HERMES_SECRET!,
+        hermesProfile: process.env.HERMES_PROFILE || undefined,
         expressPort: parseInt(process.env.EXPRESS_PORT!, 10) || 4849,
         ownerNumbers,
         allowedUsers,
