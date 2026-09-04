@@ -7,6 +7,7 @@ export interface AppConfig {
     hermesSecret: string;
     expressPort: number;
     ownerNumbers: string[];
+    allowedUsers: string[];
     allowedGroups: string[];
 }
 
@@ -37,6 +38,12 @@ export function loadConfig(): AppConfig {
         .map(n => n.trim().replace(/\D/g, ''))
         .filter(Boolean);
 
+    const rawAllowedUsers = process.env.ALLOWED_USERS || '';
+    const allowedUsers = rawAllowedUsers
+        .split(',')
+        .map(u => u.trim().replace(/\D/g, ''))
+        .filter(Boolean);
+
     const rawGroups = process.env.ALLOWED_GROUPS || '';
     const allowedGroups = rawGroups
         .split(',')
@@ -49,6 +56,7 @@ export function loadConfig(): AppConfig {
         hermesSecret: process.env.HERMES_SECRET!,
         expressPort: parseInt(process.env.EXPRESS_PORT!, 10) || 4849,
         ownerNumbers,
+        allowedUsers,
         allowedGroups,
     };
 
@@ -62,6 +70,16 @@ export function isOwner(senderId: string): boolean {
     const config = loadConfig();
     const cleanNumber = senderId.replace(/\D/g, '');
     return config.ownerNumbers.some(owner => cleanNumber.endsWith(owner) || owner.endsWith(cleanNumber));
+}
+
+/**
+ * Mengecek apakah pengirim diizinkan (Owner atau terdaftar di ALLOWED_USERS)
+ */
+export function isAllowedUser(senderId: string): boolean {
+    if (isOwner(senderId)) return true;
+    const config = loadConfig();
+    const cleanNumber = senderId.replace(/\D/g, '');
+    return config.allowedUsers.some(user => cleanNumber.endsWith(user) || user.endsWith(cleanNumber));
 }
 
 /**

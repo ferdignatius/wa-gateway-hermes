@@ -41,6 +41,7 @@ services:
       # ── App Config ────────────────────────────────────────────────────────────
       EXPRESS_PORT: 4849
       OWNER_NUMBER: ${OWNER_NUMBER}
+      ALLOWED_USERS: ${ALLOWED_USERS:-}
       ALLOWED_GROUPS: ${ALLOWED_GROUPS:-}
       PUPPETEER_EXECUTABLE_PATH: /usr/bin/chromium
 

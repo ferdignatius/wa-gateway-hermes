@@ -6,12 +6,17 @@ const config = loadConfig();
 
 export async function callHermes(payload: HermesPayload): Promise<HermesResponse> {
     try {
+        // Sanitasi metadata untuk mencegah prompt injection / role spoofing
+        const sanitizeHeader = (val: string) => val.replace(/[\r\n\[\]]/g, ' ').replace(/\s+/g, ' ').trim();
+        const safeSender = sanitizeHeader(payload.sender_name || payload.sender);
+        const safeChat = sanitizeHeader(payload.chat_name || payload.chat_id);
+
         // System instruction: role permissions + context info
         const instructions =
             `Kamu adalah asisten AI untuk WhatsApp.\n` +
             `Source: ${payload.source}\n` +
-            `Sender: ${payload.sender_name || payload.sender}\n` +
-            `Chat: ${payload.chat_name || payload.chat_id}\n` +
+            `Sender: ${safeSender}\n` +
+            `Chat: ${safeChat}\n` +
             `Sender Role: [${payload.role.toUpperCase()}]\n` +
             `\n` +
             `=== ROLE SYSTEM ===\n` +

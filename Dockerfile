@@ -15,19 +15,21 @@ RUN bun run build
 # dan Chrome DevTools WebSocket protocol pada whatsapp-web.js.
 FROM node:22-slim AS production
 
-# Install dumb-init + Chromium
+# Install dumb-init + Chromium + curl (untuk docker healthcheck)
 # (fonts-ipafont-gothic & fonts-wqy-zenhei untuk render emoji/karakter khusus WA)
 RUN apt-get update && apt-get install -y --no-install-recommends --fix-missing \
     dumb-init \
     chromium \
+    curl \
     fonts-ipafont-gothic \
     fonts-wqy-zenhei \
     && rm -rf /var/lib/apt/lists/*
 
-# Konfigurasi Environment Puppeteer
-ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
-ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
-ENV NODE_ENV=production
+# Konfigurasi Environment Puppeteer & App
+ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true \
+    PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium \
+    NODE_ENV=production \
+    EXPRESS_PORT=4849
 
 WORKDIR /app
 

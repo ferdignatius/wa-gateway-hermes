@@ -1,4 +1,5 @@
 import express, { Express, Request, Response } from 'express';
+import crypto from 'crypto';
 import { Client } from 'whatsapp-web.js';
 import { loadConfig } from '../config/env';
 import { splitMessage } from '../wa/reply';
@@ -23,7 +24,11 @@ export function createExpressApp(client: Client): Express {
     // ── Hermes Push Endpoint (Outbound: Hermes → WA) ─────────────
     app.post('/send', async (req: Request, res: Response) => {
         const secret = req.headers['x-hermes-secret'];
-        if (!secret || secret !== config.hermesSecret) {
+        if (
+            typeof secret !== 'string' ||
+            secret.length !== config.hermesSecret.length ||
+            !crypto.timingSafeEqual(Buffer.from(secret), Buffer.from(config.hermesSecret))
+        ) {
             return res.status(401).json({ success: false, error: 'Unauthorized' });
         }
 

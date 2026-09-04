@@ -1,5 +1,5 @@
 import http from 'http';
-import { loadConfig, isOwner, isGroupAllowed } from './config/env';
+import { loadConfig, isOwner, isAllowedUser, isGroupAllowed } from './config/env';
 import { client, initClient } from './wa/client';
 import { shouldProcessDM, shouldProcessGroup } from './wa/filters';
 import { enqueue } from './queue/messageQueue';
@@ -20,6 +20,7 @@ async function main() {
         const chat = await message.getChat();
         const isGroup = chat.isGroup;
         const botId = client.info.wid._serialized;
+        const botNumber = client.info.wid.user;
 
         console.log(
             `[MSG] from=${message.from} isGroup=${isGroup} ` +
@@ -28,27 +29,32 @@ async function main() {
 
         if (isGroup) {
             // ── GROUP FLOW ──────────────────────────────────────────────
-            const result = shouldProcessGroup(message, botId);
-            if (!result.process) return;
-
-            // 1. Cek apakah grup ini diizinkan
+            // 1. Cek apakah grup ini diizinkan (Allowed Company / Group)
             if (!isGroupAllowed(chat.id._serialized)) {
-                console.log(`[GROUP] DROPPED — group ${chat.id._serialized} ("${chat.name}") not allowed in config`);
                 return;
             }
 
             const senderId = message.author || message.from || '';
 
-            // 2. Resolusi contact untuk mendapatkan nomor telepon aktual (mengatasi masalah @lid vs @c.us)
+            // 2. Resolusi contact untuk mendapatkan nomor telepon aktual
             let contact = await message.getContact().catch(() => null);
             const contactNumber = contact?.number ? `${contact.number}@c.us` : '';
             const checkSenderId = contactNumber || senderId;
+
+            // 3. Cek apakah pengirim diizinkan (Allowed User: Owner atau terdaftar di ALLOWED_USERS)
+            if (!isAllowedUser(checkSenderId)) {
+                return;
+            }
+
+            // 4. Cek apakah nomor bot di-tag / di-mention atau pesan me-reply bot
+            const result = await shouldProcessGroup(message, botId, botNumber);
+            if (!result.process) return;
 
             // Role: Owner jika terdaftar di OWNER_NUMBER, selain itu Member
             const userRole: 'owner' | 'member' = isOwner(checkSenderId) ? 'owner' : 'member';
             const senderName = contact?.pushname || contact?.name || checkSenderId;
 
-            console.log(`[GROUP] chat="${chat.name}" sender=${checkSenderId} (${senderName}) role=${userRole}`);
+            console.log(`[GROUP] TAGGED in "${chat.name}" by ${checkSenderId} (${senderName}) role=${userRole}`);
 
             // ── Redis Guards ────────────────────────────────────────────
             const isNewMsg = await checkDedup(message.id._serialized);
