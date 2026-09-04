@@ -7,6 +7,7 @@ import { Chat, Message } from "whatsapp-web.js";
  */
 export function startTypingLoop(chat: Chat): () => void {
     let active = true;
+    let timer: NodeJS.Timeout | null = null;
 
     const loop = async () => {
         while (active) {
@@ -15,12 +16,24 @@ export function startTypingLoop(chat: Chat): () => void {
             } catch {
                 // ignore typing errors — kadang terjadi saat reconnect
             }
-            await new Promise(resolve => setTimeout(resolve, 20000));
+            if (!active) break;
+            await new Promise<void>(resolve => {
+                timer = setTimeout(() => {
+                    timer = null;
+                    resolve();
+                }, 20000);
+            });
         }
     };
 
     loop();
-    return () => { active = false; };
+    return () => {
+        active = false;
+        if (timer) {
+            clearTimeout(timer);
+            timer = null;
+        }
+    };
 }
 
 /**

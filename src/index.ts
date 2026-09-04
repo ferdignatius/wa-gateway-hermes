@@ -11,8 +11,6 @@ import { prisma } from './lib/prisma';
 import { redis } from './lib/redis';
 import { checkRateLimit, checkDedup } from './lib/rateLimiter';
 
-// Interval untuk log pruning (hapus log > 30 hari)
-const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
 
 async function main() {
     const config = loadConfig();
@@ -45,20 +43,33 @@ async function main() {
 
             const senderId = message.author || '';
 
-            // 2. Cek apakah pengirim terdaftar di DB
-            const user = await prisma.user.findUnique({ where: { whatsappId: senderId } });
+            // 2. Resolusi contact untuk mendapatkan nomor telepon aktual (mengatasi masalah @lid vs @c.us)
+            let contact = await message.getContact().catch(() => null);
+            const contactNumber = contact?.number ? `${contact.number}@c.us` : '';
+
+            // Cek apakah pengirim terdaftar di DB (cek via senderId maupun nomor telepon aktual)
+            const user = await prisma.user.findFirst({
+                where: {
+                    OR: [
+                        { whatsappId: senderId },
+                        ...(contactNumber ? [{ whatsappId: contactNumber }] : []),
+                    ],
+                },
+            });
             if (!user) {
-                console.log(`[GROUP] DROPPED — sender ${senderId} not in DB`);
+                console.log(`[GROUP] DROPPED — sender ${senderId} (${contactNumber || 'unknown'}) not in DB`);
                 return;
             }
 
-            console.log(`[GROUP] chat="${chat.name}" sender=${senderId} role=${user.role}`);
+            const senderName = contact?.pushname || contact?.name || user.name || senderId;
+            console.log(`[GROUP] chat="${chat.name}" sender=${senderId} (${senderName}) role=${user.role}`);
 
             // ── Redis Guards ────────────────────────────────────────────
             const isNewMsg = await checkDedup(message.id._serialized);
             if (!isNewMsg) return;
 
-            const allowed = await checkRateLimit(senderId);
+            const rateLimitKey = contactNumber || senderId;
+            const allowed = await checkRateLimit(rateLimitKey);
             if (!allowed) {
                 await message.reply('⏱️ Terlalu banyak pesan. Silakan tunggu sebentar.').catch(() => {});
                 return;
@@ -66,21 +77,23 @@ async function main() {
 
             enqueue(chat.id._serialized, async () => {
                 const stopTyping = startTypingLoop(chat);
-                let contact;
                 let replyText = '';
                 let logStatus = 'success';
                 let logError: string | undefined;
 
                 try {
-                    contact = await message.getContact();
-                    const senderName = contact.pushname || contact.name || senderId;
+                    // Refresh contact jika sebelumnya belum didapatkan
+                    if (!contact) {
+                        contact = await message.getContact().catch(() => null);
+                    }
+                    const activeSenderName = contact?.pushname || contact?.name || user.name || senderId;
 
                     // Inject context quoted message jika ada
                     let messageText = result.cleanedBody;
                     if (message.hasQuotedMsg) {
                         const quoted = await message.getQuotedMessage();
-                        const quotedContact = await quoted.getContact();
-                        const quotedName = quotedContact.pushname || quotedContact.name || 'Unknown';
+                        const quotedContact = await quoted.getContact().catch(() => null);
+                        const quotedName = quotedContact?.pushname || quotedContact?.name || 'Unknown';
                         messageText = `[Replying to ${quotedName}: "${(quoted.body || '').slice(0, 500)}"]\n\n${messageText}`;
                     }
 
@@ -89,8 +102,8 @@ async function main() {
                         chat_type: 'group',
                         chat_id: chat.id._serialized,
                         chat_name: chat.name,
-                        sender: senderId,
-                        sender_name: senderName,
+                        sender: user.whatsappId,
+                        sender_name: activeSenderName,
                         role: user.role,
                         message: messageText,
                     };
@@ -111,11 +124,11 @@ async function main() {
                 } finally {
                     stopTyping();
                     // Tulis ke activity log
-                    const senderName = contact?.pushname || contact?.name || senderId;
+                    const logSenderName = contact?.pushname || contact?.name || user.name || senderId;
                     await prisma.activityLog.create({
                         data: {
-                            sender: senderId,
-                            senderName,
+                            sender: user.whatsappId,
+                            senderName: logSenderName,
                             chatId: chat.id._serialized,
                             chatName: chat.name,
                             isGroup: true,
@@ -134,10 +147,21 @@ async function main() {
 
             const senderId = message.from;
 
+            // Resolusi contact untuk DM
+            let contact = await message.getContact().catch(() => null);
+            const contactNumber = contact?.number ? `${contact.number}@c.us` : '';
+
             // DB auth: hanya owner yang terdaftar yang bisa lanjut di DM
-            const user = await prisma.user.findUnique({ where: { whatsappId: senderId } });
+            const user = await prisma.user.findFirst({
+                where: {
+                    OR: [
+                        { whatsappId: senderId },
+                        ...(contactNumber ? [{ whatsappId: contactNumber }] : []),
+                    ],
+                },
+            });
             if (!user || user.role !== 'owner') {
-                console.log(`[DM] DROPPED — sender ${senderId} not in DB or role is not owner`);
+                console.log(`[DM] DROPPED — sender ${senderId} (${contactNumber || 'unknown'}) not in DB or role is not owner`);
                 return;
             }
 
@@ -147,7 +171,8 @@ async function main() {
             const isNewDm = await checkDedup(message.id._serialized);
             if (!isNewDm) return;
 
-            const dmAllowed = await checkRateLimit(senderId);
+            const dmRateLimitKey = contactNumber || senderId;
+            const dmAllowed = await checkRateLimit(dmRateLimitKey);
             if (!dmAllowed) {
                 await chat.sendMessage('⏱️ Terlalu banyak pesan. Silakan tunggu sebentar.').catch(() => {});
                 return;
@@ -171,7 +196,7 @@ async function main() {
                         source: 'whatsapp',
                         chat_type: 'dm',
                         chat_id: chat.id._serialized,
-                        sender: senderId,
+                        sender: user.whatsappId,
                         sender_name: user.name,
                         role: user.role,
                         message: messageText,
@@ -194,7 +219,7 @@ async function main() {
                     stopTyping();
                     await prisma.activityLog.create({
                         data: {
-                            sender: senderId,
+                            sender: user.whatsappId,
                             senderName: user.name,
                             chatId: chat.id._serialized,
                             chatName: user.name,
@@ -218,20 +243,32 @@ async function main() {
         console.log(`[Server] HTTP running on port ${config.expressPort} (with SSE support)`);
     });
 
-    // 4. Log pruning — hapus ActivityLog > 30 hari, jalankan setiap 24 jam
-    setInterval(async () => {
-        const cutoff = new Date(Date.now() - THIRTY_DAYS_MS);
-        const { count } = await prisma.activityLog.deleteMany({
-            where: { timestamp: { lt: cutoff } },
-        });
-        if (count > 0) {
-            console.log(`[Log Pruner] Deleted ${count} old log entries (older than 30 days)`);
+    // 4. Log pruning — hapus ActivityLog > N hari (default: 30 hari / 1 bulan)
+    const retentionMs = config.logRetentionDays * 24 * 60 * 60 * 1000;
+    const pruneOldLogs = async () => {
+        try {
+            const cutoff = new Date(Date.now() - retentionMs);
+            const { count } = await prisma.activityLog.deleteMany({
+                where: { timestamp: { lt: cutoff } },
+            });
+            if (count > 0) {
+                console.log(`[Log Pruner] Berhasil menghapus ${count} log lama (> ${config.logRetentionDays} hari)`);
+            }
+        } catch (err: any) {
+            console.error('[Log Pruner] Gagal membersihkan log lama:', err.message);
         }
-    }, 24 * 60 * 60 * 1000); // setiap 24 jam
+    };
+
+    // Jalankan pembersihan langsung saat startup
+    await pruneOldLogs();
+
+    // Jadwalkan pembersihan otomatis berjalan setiap 24 jam
+    const prunerInterval = setInterval(pruneOldLogs, 24 * 60 * 60 * 1000);
 
     // 5. Graceful shutdown
     const shutdown = async () => {
         console.log('[Server] Shutting down gracefully...');
+        clearInterval(prunerInterval);
         await client.destroy().catch(() => {});
         await prisma.$disconnect().catch(() => {});
         await redis.quit().catch(() => {});

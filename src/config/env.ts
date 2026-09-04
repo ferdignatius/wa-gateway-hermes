@@ -8,6 +8,7 @@ export interface AppConfig {
     expressPort: number;
     jwtSecret: string;
     allowedOrigin: string;
+    logRetentionDays: number;
 }
 
 export function loadConfig(): AppConfig {
@@ -33,5 +34,6 @@ export function loadConfig(): AppConfig {
         expressPort: parseInt(process.env.EXPRESS_PORT!, 10) || 4849,
         jwtSecret: process.env.JWT_SECRET!,
         allowedOrigin: process.env.ALLOWED_ORIGIN || 'http://localhost:3000',
+        logRetentionDays: parseInt(process.env.LOG_RETENTION_DAYS || '30', 10),
     };
 }

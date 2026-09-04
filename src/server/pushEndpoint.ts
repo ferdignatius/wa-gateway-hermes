@@ -2,6 +2,7 @@ import express, { Express, Request, Response } from 'express';
 import cors from 'cors';
 import { Client } from 'whatsapp-web.js';
 import { loadConfig } from '../config/env';
+import { splitMessage } from '../wa/reply';
 import adminRouter from './adminRouter';
 
 const config = loadConfig();
@@ -15,7 +16,7 @@ const config = loadConfig();
 export function createExpressApp(client: Client): Express {
     const app = express();
 
-    // CORS — hanya izinkan origin dari Admin Panel
+    // CORS — hanya izinkan origin dari Admin Panel yang terdaftar
     const allowedOrigins = config.allowedOrigin.split(',').map(o => o.trim());
 
     app.use(cors({
@@ -29,17 +30,12 @@ export function createExpressApp(client: Client): Express {
                 try {
                     const allowedUrl = allowedOpt.startsWith('http://') || allowedOpt.startsWith('https://')
                         ? new URL(allowedOpt)
-                        : null;
+                        : new URL(`https://${allowedOpt}`);
 
                     const requestUrl = new URL(origin);
-
-                    if (allowedUrl) {
-                        return requestUrl.origin === allowedUrl.origin;
-                    } else {
-                        return requestUrl.hostname === allowedOpt || requestUrl.host === allowedOpt;
-                    }
+                    return requestUrl.origin === allowedUrl.origin;
                 } catch {
-                    return origin.includes(allowedOpt);
+                    return false;
                 }
             });
 
@@ -64,7 +60,7 @@ export function createExpressApp(client: Client): Express {
     // ── Hermes Push Endpoint (Outbound: Hermes → WA) ─────────────
     app.post('/send', async (req: Request, res: Response) => {
         const secret = req.headers['x-hermes-secret'];
-        if (secret !== config.hermesSecret) {
+        if (!secret || secret !== config.hermesSecret) {
             return res.status(401).json({ success: false, error: 'Unauthorized' });
         }
 
@@ -74,7 +70,10 @@ export function createExpressApp(client: Client): Express {
         }
 
         try {
-            await client.sendMessage(chat_id, message);
+            const chunks = splitMessage(String(message));
+            for (const chunk of chunks) {
+                await client.sendMessage(chat_id, chunk);
+            }
             return res.status(200).json({ success: true });
         } catch (err: any) {
             console.error('[Push] Failed to send:', err.message);

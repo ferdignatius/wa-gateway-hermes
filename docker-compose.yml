@@ -37,6 +37,9 @@ services:
   wa-gateway:
     image: ferdignatius/wa-gateway:latest
     container_name: wabot-gateway
+    restart: unless-stopped
+    expose:
+      - "4849"
     environment:
       NODE_ENV: production
 
@@ -57,6 +60,8 @@ services:
       # URL production Admin Panel di Vercel — dipakai untuk validasi CORS
       ALLOWED_ORIGIN: ${ALLOWED_ORIGIN}
       PUPPETEER_EXECUTABLE_PATH: /usr/bin/chromium
+      # Retensi log aktivitas percakapan (dalam hari, misal: 30 hari = 1 bulan)
+      LOG_RETENTION_DAYS: ${LOG_RETENTION_DAYS:-30}
 
     depends_on:
       hermes-agent:
@@ -84,12 +89,6 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
-    restart: unless-stopped
-    # Watchtower di STACK 2 (OPS) akan auto-detect image baru secara default.
-    # Label di bawah hanya diperlukan jika Watchtower dikonfigurasi mode
-    # "com.centurylinklabs.watchtower.enable=true" (opt-in). Aktifkan jika perlu:
-    # labels:
-    #   - "com.centurylinklabs.watchtower.enable=true"
 
 volumes:
   wa_auth:

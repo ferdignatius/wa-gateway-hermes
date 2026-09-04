@@ -23,9 +23,7 @@ async function main() {
 
     const admin = await prisma.adminUser.upsert({
         where: { username: defaultUsername },
-        update: {
-            passwordHash,
-        },
+        update: {}, // Jangan timpa password jika admin sudah ada (agar password yg diganti user tidak ter-reset saat restart)
         create: {
             username: defaultUsername,
             passwordHash,

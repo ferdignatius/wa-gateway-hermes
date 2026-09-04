@@ -60,11 +60,16 @@ export async function initClient(maxRetries: number = 5): Promise<void> {
         process.exit(1);
     });
 
-    client.on('disconnected', (reason) => {
+    client.on('disconnected', async (reason) => {
         console.error('[WA] Client disconnected:', reason);
         setWaStatus('disconnected');
         broadcast({ type: 'status', data: 'disconnected' });
-        console.log('[WA] Reconnecting in 5s...');
+        console.log('[WA] Cleaning up and reconnecting in 5s...');
+        try {
+            await client.destroy();
+        } catch {
+            // ignore cleanup error
+        }
         setTimeout(() => {
             client.initialize().catch(e => {
                 console.error('[WA] Reconnect failed:', e.message);
