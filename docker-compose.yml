@@ -1,25 +1,15 @@
-# docker-compose.yml — STACK 3 (APPS): wa-gateway
-# Asumsi:
-#  - postgres-master, redis-queue, rabbitmq-queue sudah hidup di STACK 4 (CORE)
-#  - Kedua jaringan eksternal (proxy-tier, data-tier) sudah dibuat sebelumnya
-#  - Image di-build & push ke registry sebelum deploy (lihat README.md)
-
+# docker-compose.yml — WA Gateway + Hermes Agent
 services:
   # ── Hermes Agent AI ──────────────────────────────────────────────────────────
   # Menggunakan official image NousResearch. Port default: 8642.
-  # Konfigurasi agent (API key, model, dll) diatur via setup wizard sekali di server:
-  #   docker run -it --rm -v ~/.hermes:/opt/data nousresearch/hermes-agent setup
   hermes-agent:
     image: nousresearch/hermes-agent
     container_name: wabot-hermes
     command: ["gateway", "run"]
-    # Tidak perlu env vars — semua konfigurasi (API key, model) sudah
-    # tersimpan di volume hermes-data via setup wizard.
     volumes:
       - hermes_sessions:/opt/data
     networks:
-      - proxy-tier  # Diperlukan agar bisa akses internet → OpenRouter API
-      - data-tier   # Komunikasi internal dengan wa-gateway
+      - proxy-tier  # Akses internet (OpenRouter API) & komunikasi dengan wa-gateway
     deploy:
       resources:
         limits:
@@ -33,7 +23,7 @@ services:
         max-file: "3"
     restart: unless-stopped
 
-  # ── WA Gateway (Node.js + Chromium) ─────────────────────────────────────────
+  # ── WA Gateway (Pure Gateway: Node.js + Chromium) ───────────────────────────
   wa-gateway:
     image: ferdignatius/wa-gateway:latest
     container_name: wabot-gateway
@@ -43,25 +33,16 @@ services:
     environment:
       NODE_ENV: production
 
-      # ── Database (postgres-master dari STACK 4 via data-tier) ────────────────
-      DATABASE_URL: "postgresql://${CORE_DB_USER}:${CORE_DB_PASSWORD}@postgres-master:5432/wagateway?schema=public"
-
-      # ── Redis (redis-queue dari STACK 4 via data-tier) ────────────────────────
-      REDIS_URL: "redis://redis-queue:6379"
-
-      # ── Hermes Agent (service internal di stack ini) ──────────────────────────
+      # ── Hermes Agent ──────────────────────────────────────────────────────────
       HERMES_API_URL: "http://wabot-hermes:8642/v1/responses"
       HERMES_API_KEY: ${HERMES_API_KEY}
       HERMES_SECRET: ${HERMES_SECRET}
 
       # ── App Config ────────────────────────────────────────────────────────────
       EXPRESS_PORT: 4849
-      JWT_SECRET: ${JWT_SECRET}
-      # URL production Admin Panel di Vercel — dipakai untuk validasi CORS
-      ALLOWED_ORIGIN: ${ALLOWED_ORIGIN}
+      OWNER_NUMBER: ${OWNER_NUMBER}
+      ALLOWED_GROUPS: ${ALLOWED_GROUPS:-}
       PUPPETEER_EXECUTABLE_PATH: /usr/bin/chromium
-      # Retensi log aktivitas percakapan (dalam hari, misal: 30 hari = 1 bulan)
-      LOG_RETENTION_DAYS: ${LOG_RETENTION_DAYS:-30}
 
     depends_on:
       hermes-agent:
@@ -70,8 +51,7 @@ services:
       - wa_auth:/app/.wwebjs_auth
       - wa_cache:/app/.wwebjs_cache
     networks:
-      - proxy-tier  # NPM routing trafik dari Vercel/internet masuk ke sini
-      - data-tier   # Akses ke postgres-master & redis-queue dari CORE
+      - proxy-tier  # Routing internal & NPM reverse-proxy
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:4849/health || exit 1"]
       interval: 30s
@@ -100,6 +80,4 @@ volumes:
 
 networks:
   proxy-tier:
-    external: true
-  data-tier:
     external: true

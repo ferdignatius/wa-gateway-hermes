@@ -1,5 +1,5 @@
 import http from 'http';
-import { loadConfig } from './config/env';
+import { loadConfig, isOwner, isGroupAllowed } from './config/env';
 import { client, initClient } from './wa/client';
 import { shouldProcessDM, shouldProcessGroup } from './wa/filters';
 import { enqueue } from './queue/messageQueue';
@@ -7,10 +7,7 @@ import { callHermes } from './hermes/adapter';
 import { HermesPayload } from './hermes/types';
 import { sendReply, startTypingLoop } from './wa/reply';
 import { createExpressApp } from './server/pushEndpoint';
-import { prisma } from './lib/prisma';
-import { redis } from './lib/redis';
 import { checkRateLimit, checkDedup } from './lib/rateLimiter';
-
 
 async function main() {
     const config = loadConfig();
@@ -34,35 +31,24 @@ async function main() {
             const result = shouldProcessGroup(message, botId);
             if (!result.process) return;
 
-            // 1. Cek apakah grup ini diperbolehkan
-            const groupAllowed = await prisma.allowedGroup.findUnique({ where: { groupId: chat.id._serialized } });
-            if (!groupAllowed) {
-                console.log(`[GROUP] DROPPED — group ${chat.id._serialized} ("${chat.name}") not allowed in DB`);
+            // 1. Cek apakah grup ini diizinkan
+            if (!isGroupAllowed(chat.id._serialized)) {
+                console.log(`[GROUP] DROPPED — group ${chat.id._serialized} ("${chat.name}") not allowed in config`);
                 return;
             }
 
-            const senderId = message.author || '';
+            const senderId = message.author || message.from || '';
 
             // 2. Resolusi contact untuk mendapatkan nomor telepon aktual (mengatasi masalah @lid vs @c.us)
             let contact = await message.getContact().catch(() => null);
             const contactNumber = contact?.number ? `${contact.number}@c.us` : '';
+            const checkSenderId = contactNumber || senderId;
 
-            // Cek apakah pengirim terdaftar di DB (cek via senderId maupun nomor telepon aktual)
-            const user = await prisma.user.findFirst({
-                where: {
-                    OR: [
-                        { whatsappId: senderId },
-                        ...(contactNumber ? [{ whatsappId: contactNumber }] : []),
-                    ],
-                },
-            });
-            if (!user) {
-                console.log(`[GROUP] DROPPED — sender ${senderId} (${contactNumber || 'unknown'}) not in DB`);
-                return;
-            }
+            // Role: Owner jika terdaftar di OWNER_NUMBER, selain itu Member
+            const userRole: 'owner' | 'member' = isOwner(checkSenderId) ? 'owner' : 'member';
+            const senderName = contact?.pushname || contact?.name || checkSenderId;
 
-            const senderName = contact?.pushname || contact?.name || user.name || senderId;
-            console.log(`[GROUP] chat="${chat.name}" sender=${senderId} (${senderName}) role=${user.role}`);
+            console.log(`[GROUP] chat="${chat.name}" sender=${checkSenderId} (${senderName}) role=${userRole}`);
 
             // ── Redis Guards ────────────────────────────────────────────
             const isNewMsg = await checkDedup(message.id._serialized);
@@ -78,15 +64,13 @@ async function main() {
             enqueue(chat.id._serialized, async () => {
                 const stopTyping = startTypingLoop(chat);
                 let replyText = '';
-                let logStatus = 'success';
-                let logError: string | undefined;
 
                 try {
                     // Refresh contact jika sebelumnya belum didapatkan
                     if (!contact) {
                         contact = await message.getContact().catch(() => null);
                     }
-                    const activeSenderName = contact?.pushname || contact?.name || user.name || senderId;
+                    const activeSenderName = contact?.pushname || contact?.name || senderName;
 
                     // Inject context quoted message jika ada
                     let messageText = result.cleanedBody;
@@ -102,9 +86,9 @@ async function main() {
                         chat_type: 'group',
                         chat_id: chat.id._serialized,
                         chat_name: chat.name,
-                        sender: user.whatsappId,
+                        sender: checkSenderId,
                         sender_name: activeSenderName,
-                        role: user.role,
+                        role: userRole,
                         message: messageText,
                     };
 
@@ -112,10 +96,10 @@ async function main() {
                     replyText = response.reply;
                     stopTyping();
                     await sendReply(chat, message, response.reply, true);
+                    console.log(`[GROUP REPLY] to="${activeSenderName}" in="${chat.name}": "${replyText.slice(0, 80)}"`);
                 } catch (err: any) {
                     stopTyping();
-                    logStatus = 'error';
-                    logError = err.message;
+                    console.error('[GROUP ERROR]', err.message);
                     const errMsg = err.code === 'ECONNABORTED'
                         ? '⏳ Maaf, request timeout. Coba lagi nanti.'
                         : '❌ Terjadi kesalahan saat memproses pesan.';
@@ -123,21 +107,6 @@ async function main() {
                     await message.reply(errMsg).catch(() => {});
                 } finally {
                     stopTyping();
-                    // Tulis ke activity log
-                    const logSenderName = contact?.pushname || contact?.name || user.name || senderId;
-                    await prisma.activityLog.create({
-                        data: {
-                            sender: user.whatsappId,
-                            senderName: logSenderName,
-                            chatId: chat.id._serialized,
-                            chatName: chat.name,
-                            isGroup: true,
-                            message: result.cleanedBody,
-                            reply: replyText,
-                            status: logStatus,
-                            errorMsg: logError,
-                        },
-                    }).catch(e => console.error('[Log] Failed to write activity log:', e.message));
                 }
             });
 
@@ -150,22 +119,16 @@ async function main() {
             // Resolusi contact untuk DM
             let contact = await message.getContact().catch(() => null);
             const contactNumber = contact?.number ? `${contact.number}@c.us` : '';
+            const checkSenderId = contactNumber || senderId;
 
-            // DB auth: hanya owner yang terdaftar yang bisa lanjut di DM
-            const user = await prisma.user.findFirst({
-                where: {
-                    OR: [
-                        { whatsappId: senderId },
-                        ...(contactNumber ? [{ whatsappId: contactNumber }] : []),
-                    ],
-                },
-            });
-            if (!user || user.role !== 'owner') {
-                console.log(`[DM] DROPPED — sender ${senderId} (${contactNumber || 'unknown'}) not in DB or role is not owner`);
+            // Hanya owner yang dilayani di DM
+            if (!isOwner(checkSenderId)) {
+                console.log(`[DM] DROPPED — sender ${checkSenderId} is not configured as owner`);
                 return;
             }
 
-            console.log(`[DM] sender=${senderId} role=owner`);
+            const senderName = contact?.pushname || contact?.name || 'Owner';
+            console.log(`[DM] sender=${checkSenderId} (${senderName}) role=owner`);
 
             // ── Redis Guards ────────────────────────────────────────────
             const isNewDm = await checkDedup(message.id._serialized);
@@ -181,8 +144,6 @@ async function main() {
             enqueue(chat.id._serialized, async () => {
                 const stopTyping = startTypingLoop(chat);
                 let replyText = '';
-                let logStatus = 'success';
-                let logError: string | undefined;
 
                 try {
                     // Inject context quoted message jika ada
@@ -196,9 +157,9 @@ async function main() {
                         source: 'whatsapp',
                         chat_type: 'dm',
                         chat_id: chat.id._serialized,
-                        sender: user.whatsappId,
-                        sender_name: user.name,
-                        role: user.role,
+                        sender: checkSenderId,
+                        sender_name: senderName,
+                        role: 'owner',
                         message: messageText,
                     };
 
@@ -206,10 +167,10 @@ async function main() {
                     replyText = response.reply;
                     stopTyping();
                     await sendReply(chat, null, response.reply, false);
+                    console.log(`[DM REPLY] to="${senderName}": "${replyText.slice(0, 80)}"`);
                 } catch (err: any) {
                     stopTyping();
-                    logStatus = 'error';
-                    logError = err.message;
+                    console.error('[DM ERROR]', err.message);
                     const errMsg = err.code === 'ECONNABORTED'
                         ? '⏳ Maaf, request timeout. Coba lagi nanti.'
                         : '❌ Terjadi kesalahan saat memproses pesan.';
@@ -217,61 +178,23 @@ async function main() {
                     await chat.sendMessage(errMsg).catch(() => {});
                 } finally {
                     stopTyping();
-                    await prisma.activityLog.create({
-                        data: {
-                            sender: user.whatsappId,
-                            senderName: user.name,
-                            chatId: chat.id._serialized,
-                            chatName: user.name,
-                            isGroup: false,
-                            message: message.body,
-                            reply: replyText,
-                            status: logStatus,
-                            errorMsg: logError,
-                        },
-                    }).catch(e => console.error('[Log] Failed to write activity log:', e.message));
                 }
             });
         }
     });
 
-    // 3. Buat HTTP server (Express REST API + SSE di port yang sama)
+    // 3. Buat HTTP server (Express REST API: /health, /send)
     const expressApp = createExpressApp(client);
     const httpServer = http.createServer(expressApp);
 
     httpServer.listen(config.expressPort, () => {
-        console.log(`[Server] HTTP running on port ${config.expressPort} (with SSE support)`);
+        console.log(`[Server] HTTP running on port ${config.expressPort}`);
     });
 
-    // 4. Log pruning — hapus ActivityLog > N hari (default: 30 hari / 1 bulan)
-    const retentionMs = config.logRetentionDays * 24 * 60 * 60 * 1000;
-    const pruneOldLogs = async () => {
-        try {
-            const cutoff = new Date(Date.now() - retentionMs);
-            const { count } = await prisma.activityLog.deleteMany({
-                where: { timestamp: { lt: cutoff } },
-            });
-            if (count > 0) {
-                console.log(`[Log Pruner] Berhasil menghapus ${count} log lama (> ${config.logRetentionDays} hari)`);
-            }
-        } catch (err: any) {
-            console.error('[Log Pruner] Gagal membersihkan log lama:', err.message);
-        }
-    };
-
-    // Jalankan pembersihan langsung saat startup
-    await pruneOldLogs();
-
-    // Jadwalkan pembersihan otomatis berjalan setiap 24 jam
-    const prunerInterval = setInterval(pruneOldLogs, 24 * 60 * 60 * 1000);
-
-    // 5. Graceful shutdown
+    // 4. Graceful shutdown
     const shutdown = async () => {
         console.log('[Server] Shutting down gracefully...');
-        clearInterval(prunerInterval);
         await client.destroy().catch(() => {});
-        await prisma.$disconnect().catch(() => {});
-        await redis.quit().catch(() => {});
         process.exit(0);
     };
 

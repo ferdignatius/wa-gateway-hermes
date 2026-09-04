@@ -7,10 +7,6 @@ WORKDIR /app
 COPY package.json bun.lock* ./
 RUN bun install --frozen-lockfile
 
-COPY prisma ./prisma/
-# Generate Prisma Client di stage builder menggunakan Bun
-RUN bun x prisma generate
-
 COPY . .
 RUN bun run build
 
@@ -42,9 +38,7 @@ COPY package.json bun.lock* ./
 COPY --from=builder /app/node_modules ./node_modules
 
 # ── App artifacts ──────────────────────────────────────────────────────────
-COPY --from=builder /app/dist   ./dist
-COPY --from=builder /app/prisma ./prisma
-COPY prisma.config.ts ./prisma.config.ts
+COPY --from=builder /app/dist ./dist
 
 # ── Permission & Security ──────────────────────────────────────────────────
 # Buat direktori mount-point volume SEBELUM ganti USER agar Docker

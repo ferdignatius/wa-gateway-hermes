@@ -1,54 +1,17 @@
 import express, { Express, Request, Response } from 'express';
-import cors from 'cors';
 import { Client } from 'whatsapp-web.js';
 import { loadConfig } from '../config/env';
 import { splitMessage } from '../wa/reply';
-import adminRouter from './adminRouter';
 
 const config = loadConfig();
 
 /**
- * Buat Express app dengan:
- * - CORS yang dibatasi ke ALLOWED_ORIGIN
- * - POST /send — Hermes push endpoint (outbound WA)
- * - /admin/* — Admin REST API (CRUD users, logs, status)
+ * Express app untuk:
+ * - GET /health — Healthcheck endpoint
+ * - POST /send — Hermes push endpoint (outbound WA dari Hermes Agent)
  */
 export function createExpressApp(client: Client): Express {
     const app = express();
-
-    // CORS — hanya izinkan origin dari Admin Panel yang terdaftar
-    const allowedOrigins = config.allowedOrigin.split(',').map(o => o.trim());
-
-    app.use(cors({
-        origin: (origin, callback) => {
-            if (!origin) {
-                return callback(null, true);
-            }
-
-            const isAllowed = allowedOrigins.some(allowedOpt => {
-                if (allowedOpt === '*') return true;
-                try {
-                    const allowedUrl = allowedOpt.startsWith('http://') || allowedOpt.startsWith('https://')
-                        ? new URL(allowedOpt)
-                        : new URL(`https://${allowedOpt}`);
-
-                    const requestUrl = new URL(origin);
-                    return requestUrl.origin === allowedUrl.origin;
-                } catch {
-                    return false;
-                }
-            });
-
-            if (isAllowed) {
-                callback(null, true);
-            } else {
-                callback(null, false);
-            }
-        },
-        methods: ['GET', 'POST', 'PATCH', 'DELETE'],
-        allowedHeaders: ['Content-Type', 'Authorization', 'x-hermes-secret'],
-        credentials: true,
-    }));
 
     app.use(express.json());
 
@@ -80,9 +43,6 @@ export function createExpressApp(client: Client): Express {
             return res.status(500).json({ success: false, error: err.message });
         }
     });
-
-    // ── Admin API ─────────────────────────────────────────────────
-    app.use('/admin', adminRouter);
 
     return app;
 }
