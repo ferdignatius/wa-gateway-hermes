@@ -3,12 +3,7 @@
 set -e
 
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "▶  WA Gateway — Startup"
+echo "▶  WA Gateway (Pure Mode) — Starting..."
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-# Jalankan migrasi database (idempotent, aman dijalankan tiap restart)
-echo "[1/2] Running Prisma database migration..."
-node_modules/.bin/prisma migrate deploy
-
-echo "[2/2] Starting application server..."
 exec node dist/index.js

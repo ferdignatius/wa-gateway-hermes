@@ -26,4 +26,3 @@ build/
 README.md
 *.md
 nginx.conf
-wa_processor.py

@@ -1,5 +1,5 @@
 import http from 'http';
-import { loadConfig } from './config/env';
+import { loadConfig, isOwner, isAllowedUser, isGroupAllowed } from './config/env';
 import { client, initClient } from './wa/client';
 import { shouldProcessDM, shouldProcessGroup } from './wa/filters';
 import { enqueue } from './queue/messageQueue';
@@ -7,11 +7,7 @@ import { callHermes } from './hermes/adapter';
 import { HermesPayload } from './hermes/types';
 import { sendReply, startTypingLoop } from './wa/reply';
 import { createExpressApp } from './server/pushEndpoint';
-import { createWsServer } from './server/wsServer';
-import { prisma } from './lib/prisma';
-
-// Interval untuk log pruning (hapus log > 30 hari)
-const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
+import { checkRateLimit, checkDedup } from './lib/rateLimiter';
 
 async function main() {
     const config = loadConfig();
@@ -24,6 +20,7 @@ async function main() {
         const chat = await message.getChat();
         const isGroup = chat.isGroup;
         const botId = client.info.wid._serialized;
+        const botNumber = client.info.wid.user;
 
         console.log(
             `[MSG] from=${message.from} isGroup=${isGroup} ` +
@@ -32,44 +29,61 @@ async function main() {
 
         if (isGroup) {
             // ── GROUP FLOW ──────────────────────────────────────────────
-            const result = shouldProcessGroup(message, botId);
+            // 1. Cek apakah grup ini diizinkan (Allowed Company / Group)
+            if (!isGroupAllowed(chat.id._serialized)) {
+                return;
+            }
+
+            const senderId = message.author || message.from || '';
+
+            // 2. Resolusi contact untuk mendapatkan nomor telepon aktual
+            let contact = await message.getContact().catch(() => null);
+            const contactNumber = contact?.number ? `${contact.number}@c.us` : '';
+            const checkSenderId = contactNumber || senderId;
+
+            // 3. Cek apakah pengirim diizinkan (Allowed User: Owner atau terdaftar di ALLOWED_USERS)
+            if (!isAllowedUser(checkSenderId)) {
+                return;
+            }
+
+            // 4. Cek apakah nomor bot di-tag / di-mention atau pesan me-reply bot
+            const result = await shouldProcessGroup(message, botId, botNumber);
             if (!result.process) return;
 
-            // 1. Cek apakah grup ini diperbolehkan
-            const groupAllowed = await prisma.allowedGroup.findUnique({ where: { groupId: chat.id._serialized } });
-            if (!groupAllowed) {
-                console.log(`[GROUP] DROPPED — group ${chat.id._serialized} ("${chat.name}") not allowed in DB`);
+            // Role: Owner jika terdaftar di OWNER_NUMBER, selain itu Member
+            const userRole: 'owner' | 'member' = isOwner(checkSenderId) ? 'owner' : 'member';
+            const senderName = contact?.pushname || contact?.name || checkSenderId;
+
+            console.log(`[GROUP] TAGGED in "${chat.name}" by ${checkSenderId} (${senderName}) role=${userRole}`);
+
+            // ── Redis Guards ────────────────────────────────────────────
+            const isNewMsg = await checkDedup(message.id._serialized);
+            if (!isNewMsg) return;
+
+            const rateLimitKey = contactNumber || senderId;
+            const allowed = await checkRateLimit(rateLimitKey);
+            if (!allowed) {
+                await message.reply('⏱️ Terlalu banyak pesan. Silakan tunggu sebentar.').catch(() => {});
                 return;
             }
-
-            const senderId = message.author || '';
-
-            // 2. Cek apakah pengirim terdaftar di DB
-            const user = await prisma.user.findUnique({ where: { whatsappId: senderId } });
-            if (!user) {
-                console.log(`[GROUP] DROPPED — sender ${senderId} not in DB`);
-                return;
-            }
-
-            console.log(`[GROUP] chat="${chat.name}" sender=${senderId} role=${user.role}`);
 
             enqueue(chat.id._serialized, async () => {
                 const stopTyping = startTypingLoop(chat);
-                let contact;
                 let replyText = '';
-                let logStatus = 'success';
-                let logError: string | undefined;
 
                 try {
-                    contact = await message.getContact();
-                    const senderName = contact.pushname || contact.name || senderId;
+                    // Refresh contact jika sebelumnya belum didapatkan
+                    if (!contact) {
+                        contact = await message.getContact().catch(() => null);
+                    }
+                    const activeSenderName = contact?.pushname || contact?.name || senderName;
 
                     // Inject context quoted message jika ada
                     let messageText = result.cleanedBody;
                     if (message.hasQuotedMsg) {
                         const quoted = await message.getQuotedMessage();
-                        const quotedContact = await quoted.getContact();
-                        const quotedName = quotedContact.pushname || quotedContact.name || 'Unknown';
+                        const quotedContact = await quoted.getContact().catch(() => null);
+                        const quotedName = quotedContact?.pushname || quotedContact?.name || 'Unknown';
                         messageText = `[Replying to ${quotedName}: "${(quoted.body || '').slice(0, 500)}"]\n\n${messageText}`;
                     }
 
@@ -78,9 +92,9 @@ async function main() {
                         chat_type: 'group',
                         chat_id: chat.id._serialized,
                         chat_name: chat.name,
-                        sender: senderId,
-                        sender_name: senderName,
-                        role: user.role,
+                        sender: checkSenderId,
+                        sender_name: activeSenderName,
+                        role: userRole,
                         message: messageText,
                     };
 
@@ -88,10 +102,10 @@ async function main() {
                     replyText = response.reply;
                     stopTyping();
                     await sendReply(chat, message, response.reply, true);
+                    console.log(`[GROUP REPLY] to="${activeSenderName}" in="${chat.name}": "${replyText.slice(0, 80)}"`);
                 } catch (err: any) {
                     stopTyping();
-                    logStatus = 'error';
-                    logError = err.message;
+                    console.error('[GROUP ERROR]', err.message);
                     const errMsg = err.code === 'ECONNABORTED'
                         ? '⏳ Maaf, request timeout. Coba lagi nanti.'
                         : '❌ Terjadi kesalahan saat memproses pesan.';
@@ -99,21 +113,6 @@ async function main() {
                     await message.reply(errMsg).catch(() => {});
                 } finally {
                     stopTyping();
-                    // Tulis ke activity log
-                    const senderName = contact?.pushname || contact?.name || senderId;
-                    await prisma.activityLog.create({
-                        data: {
-                            sender: senderId,
-                            senderName,
-                            chatId: chat.id._serialized,
-                            chatName: chat.name,
-                            isGroup: true,
-                            message: result.cleanedBody,
-                            reply: replyText,
-                            status: logStatus,
-                            errorMsg: logError,
-                        },
-                    }).catch(e => console.error('[Log] Failed to write activity log:', e.message));
                 }
             });
 
@@ -123,20 +122,34 @@ async function main() {
 
             const senderId = message.from;
 
-            // DB auth: hanya owner yang terdaftar yang bisa lanjut di DM
-            const user = await prisma.user.findUnique({ where: { whatsappId: senderId } });
-            if (!user || user.role !== 'owner') {
-                console.log(`[DM] DROPPED — sender ${senderId} not in DB or role is not owner`);
+            // Resolusi contact untuk DM
+            let contact = await message.getContact().catch(() => null);
+            const contactNumber = contact?.number ? `${contact.number}@c.us` : '';
+            const checkSenderId = contactNumber || senderId;
+
+            // Hanya owner yang dilayani di DM
+            if (!isOwner(checkSenderId)) {
+                console.log(`[DM] DROPPED — sender ${checkSenderId} is not configured as owner`);
                 return;
             }
 
-            console.log(`[DM] sender=${senderId} role=owner`);
+            const senderName = contact?.pushname || contact?.name || 'Owner';
+            console.log(`[DM] sender=${checkSenderId} (${senderName}) role=owner`);
+
+            // ── Redis Guards ────────────────────────────────────────────
+            const isNewDm = await checkDedup(message.id._serialized);
+            if (!isNewDm) return;
+
+            const dmRateLimitKey = contactNumber || senderId;
+            const dmAllowed = await checkRateLimit(dmRateLimitKey);
+            if (!dmAllowed) {
+                await chat.sendMessage('⏱️ Terlalu banyak pesan. Silakan tunggu sebentar.').catch(() => {});
+                return;
+            }
 
             enqueue(chat.id._serialized, async () => {
                 const stopTyping = startTypingLoop(chat);
                 let replyText = '';
-                let logStatus = 'success';
-                let logError: string | undefined;
 
                 try {
                     // Inject context quoted message jika ada
@@ -150,9 +163,9 @@ async function main() {
                         source: 'whatsapp',
                         chat_type: 'dm',
                         chat_id: chat.id._serialized,
-                        sender: senderId,
-                        sender_name: user.name,
-                        role: user.role,
+                        sender: checkSenderId,
+                        sender_name: senderName,
+                        role: 'owner',
                         message: messageText,
                     };
 
@@ -160,10 +173,10 @@ async function main() {
                     replyText = response.reply;
                     stopTyping();
                     await sendReply(chat, null, response.reply, false);
+                    console.log(`[DM REPLY] to="${senderName}": "${replyText.slice(0, 80)}"`);
                 } catch (err: any) {
                     stopTyping();
-                    logStatus = 'error';
-                    logError = err.message;
+                    console.error('[DM ERROR]', err.message);
                     const errMsg = err.code === 'ECONNABORTED'
                         ? '⏳ Maaf, request timeout. Coba lagi nanti.'
                         : '❌ Terjadi kesalahan saat memproses pesan.';
@@ -171,49 +184,23 @@ async function main() {
                     await chat.sendMessage(errMsg).catch(() => {});
                 } finally {
                     stopTyping();
-                    await prisma.activityLog.create({
-                        data: {
-                            sender: senderId,
-                            senderName: user.name,
-                            chatId: chat.id._serialized,
-                            chatName: user.name,
-                            isGroup: false,
-                            message: message.body,
-                            reply: replyText,
-                            status: logStatus,
-                            errorMsg: logError,
-                        },
-                    }).catch(e => console.error('[Log] Failed to write activity log:', e.message));
                 }
             });
         }
     });
 
-    // 3. Buat HTTP server (Express REST API + WebSocket di port yang sama)
+    // 3. Buat HTTP server (Express REST API: /health, /send)
     const expressApp = createExpressApp(client);
     const httpServer = http.createServer(expressApp);
-    createWsServer(httpServer);
 
     httpServer.listen(config.expressPort, () => {
-        console.log(`[Server] HTTP + WebSocket running on port ${config.expressPort}`);
+        console.log(`[Server] HTTP running on port ${config.expressPort}`);
     });
 
-    // 4. Log pruning — hapus ActivityLog > 30 hari, jalankan setiap 24 jam
-    setInterval(async () => {
-        const cutoff = new Date(Date.now() - THIRTY_DAYS_MS);
-        const { count } = await prisma.activityLog.deleteMany({
-            where: { timestamp: { lt: cutoff } },
-        });
-        if (count > 0) {
-            console.log(`[Log Pruner] Deleted ${count} old log entries (older than 30 days)`);
-        }
-    }, 24 * 60 * 60 * 1000); // setiap 24 jam
-
-    // 5. Graceful shutdown
+    // 4. Graceful shutdown
     const shutdown = async () => {
         console.log('[Server] Shutting down gracefully...');
         await client.destroy().catch(() => {});
-        await prisma.$disconnect().catch(() => {});
         process.exit(0);
     };
 

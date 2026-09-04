@@ -1,7 +1,5 @@
 import { Client, LocalAuth } from "whatsapp-web.js";
 import qrcode from 'qrcode-terminal';
-import { broadcast } from '../server/wsServer';
-import { setWaStatus } from '../server/adminRouter';
 
 // Static Desktop Chrome userAgent — mencegah fingerprinting/ban
 const DESKTOP_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
@@ -40,31 +38,27 @@ const client = new Client({
 
 export async function initClient(maxRetries: number = 5): Promise<void> {
     client.on('qr', (qr) => {
-        console.log('[WA] QR Code generated — waiting for scan...');
+        console.log('[WA] QR Code generated — scan via terminal or Docker logs:');
         qrcode.generate(qr, { small: true });
-        setWaStatus('qr');
-        broadcast({ type: 'qr', data: qr });
-        broadcast({ type: 'status', data: 'qr' });
     });
 
     client.on('ready', () => {
         console.log('[WA] Client ready!');
-        setWaStatus('connected');
-        broadcast({ type: 'status', data: 'connected' });
     });
 
     client.on('auth_failure', (err) => {
         console.error('[WA] Auth failure:', err);
-        setWaStatus('disconnected');
-        broadcast({ type: 'status', data: 'auth_failure' });
         process.exit(1);
     });
 
-    client.on('disconnected', (reason) => {
+    client.on('disconnected', async (reason) => {
         console.error('[WA] Client disconnected:', reason);
-        setWaStatus('disconnected');
-        broadcast({ type: 'status', data: 'disconnected' });
-        console.log('[WA] Reconnecting in 5s...');
+        console.log('[WA] Cleaning up and reconnecting in 5s...');
+        try {
+            await client.destroy();
+        } catch {
+            // ignore cleanup error
+        }
         setTimeout(() => {
             client.initialize().catch(e => {
                 console.error('[WA] Reconnect failed:', e.message);

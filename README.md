@@ -1,279 +1,317 @@
-# WA Bot Assistant (Hermes + WA Gateway + Admin Panel)
+# 🤖 WA Bot Assistant — Pure WhatsApp Gateway + Hermes AI
 
-Aplikasi WhatsApp Bot Assistant yang terintegrasi dengan **Hermes Agent AI** (menggunakan Responses API), database **PostgreSQL via Prisma**, dan dilengkapi dengan **Next.js Web Admin Panel** untuk manajemen user, monitoring log, dan status koneksi WhatsApp.
+WhatsApp Gateway berkinerja tinggi yang menghubungkan **WhatsApp** secara langsung dengan **Hermes AI Agent** (via OpenRouter / NousResearch API). Dirancang dengan arsitektur **Zero-Infrastructure Dependency** (100% in-memory tanpa Redis/PostgreSQL), multi-tier role guard (RBAC), sequential message queue, anti-ban protections, serta REST API untuk outbound push message.
 
 ---
 
-## 🏗️ Arsitektur Sistem & Aliran Data (Flow)
+## 📑 Daftar Isi
+
+- [Arsitektur & Aliran Data](#-arsitektur--aliran-data)
+- [Fitur Utama](#-fitur-utama)
+- [Manajemen Akses & Peran (RBAC)](#-manajemen-akses--peran-rbac)
+- [Struktur Direktori](#-struktur-direktori)
+- [Spesifikasi API Endpoint](#-spesifikasi-api-endpoint)
+- [Variabel Environment (.env)](#-variabel-environment-env)
+- [Panduan Instalasi & Menjalankan](#-panduan-instalasi--menjalankan)
+  - [1. Mode Development (Lokal)](#1-mode-development-lokal)
+  - [2. Mode Production (Docker Compose)](#2-mode-production-docker-compose)
+  - [3. Deployment via Portainer](#3-deployment-via-portainer)
+- [CI/CD & Deployment Otomatis](#-cicd--deployment-otomatis)
+- [Troubleshooting & FAQ](#-troubleshooting--faq)
+
+---
+
+## 🏗️ Arsitektur & Aliran Data
 
 ```
-                       ┌────────────────────────┐
-                       │   WhatsApp Client      │
-                       │ (whatsapp-web.js Auth) │
-                       └───────────┬────────────┘
-                                   │
-                    ┌──────────────┴──────────────┐
-                    │                             │
-          INBOUND (WA → Bot)             OUTBOUND (Hermes → WA)
-                    │                             │
-                    ▼                             ▼
-        ┌───────────────────────┐     ┌───────────────────────┐
-        │   Message Listener    │     │    Express Server     │
-        │   (client.on msg)     │     │  (POST /send endpoint)│
-        └───────────┬───────────┘     └───────────┬───────────┘
-                    │                             │
-                    ▼                             │
-        ┌───────────────────────┐                 │
-        │     Filter Layer      │                 │
-        │ (DM/tag/bot-loop/#aii)│                 │
-        └───────────┬───────────┘                 │
-                    │                             │
-                    ▼                             │
-        ┌───────────────────────┐                 │
-        │     Role Resolver     │                 │
-        │ (Prisma DB Lookup)    │                 │
-        └───────────┬───────────┘                 │
-                    │                             │
-                    ▼                             │
-        ┌───────────────────────┐                 │
-        │   In-Memory Queue     │                 │
-        │ (Sequential processing│                 │
-        │     per Chat ID)      │                 │
-        └───────────┬───────────┘                 │
-                    │                             │
-                    ▼                             ▼
-        ┌───────────────────────┐     ┌───────────────────────┐
-        │    Hermes Adapter     │     │      Admin Panel      │
-        │ (POST to Hermes API   │◄────┤     (Next.js 16)      │
-        │ + System Instruction) │     │ (WS Status & REST API)│
-        └───────────┬───────────┘     └───────────────────────┘
-                    │
-                    ▼
-          ┌───────────────────┐
-          │ Kirim Balasan /   │
-          │  Quoted Message   │
-          └───────────────────┘
+                         ┌────────────────────────┐
+                         │    WhatsApp Client     │
+                         │ (whatsapp-web.js Auth) │
+                         └───────────┬────────────┘
+                                     │ Scan QR (Terminal / Portainer Logs)
+                     ┌───────────────┴───────────────┐
+                     │                               │
+           INBOUND (WA → Bot)              OUTBOUND (Hermes → WA)
+                     │                               │
+                     ▼                               ▼
+         ┌───────────────────────┐       ┌───────────────────────┐
+         │   Message Listener    │       │     Express Server    │
+         │   (client.on msg)     │       │   (POST /send, /health)
+         └───────────┬───────────┘       └───────────┬───────────┘
+                     │                               │
+                     ▼                               │
+         ┌───────────────────────┐                   │
+         │     Filter Layer      │                   │
+         │  (DM / Group / Tag)   │                   │
+         └───────────┬───────────┘                   │
+                     │                               │
+                     ▼                               │
+         ┌───────────────────────┐                   │
+         │   In-Memory Guards    │                   │
+         │ (Rate Limit + Dedup)  │                   │
+         └───────────┬───────────┘                   │
+                     │                               │
+                     ▼                               │
+         ┌───────────────────────┐                   │
+         │   Role Resolver       │                   │
+         │ (Owner / Member RBAC) │                   │
+         └───────────┬───────────┘                   │
+                     │                               │
+                     ▼                               │
+         ┌───────────────────────┐                   │
+         │   In-Memory Queue     │                   │
+         │ (Sequential per Chat) │                   │
+         └───────────┬───────────┘                   │
+                     │                               │
+                     ▼                               │
+         ┌───────────────────────┐                   │
+         │    Hermes Adapter     │                   │
+         │ (HTTP POST to Hermes  │                   │
+         │ + Quoted Context)     │                   │
+         └───────────┬───────────┘                   │
+                     │                               │
+                     ▼                               ▼
+           ┌───────────────────┐           ┌───────────────────┐
+           │ Reply / Quoted WA │           │ Send Push Message │
+           │ (sendReply)       │           │ (client.sendMsg)  │
+           └───────────────────┘           └───────────────────┘
 ```
 
-### 1. Inbound Message Flow (DM & Group)
+---
 
-Setiap ada pesan masuk, bot akan memprosesnya berdasarkan tipe chat:
+## ✨ Fitur Utama
 
-#### **A. Direct Message (DM) Flow**
-1. Pesan diterima oleh WA Client.
-2. Filter checking: Pesan diabaikan jika berasal dari bot itu sendiri (`fromMe`) atau broadcast status (`status@broadcast`).
-3. **Role Resolution**: Bot mencari nomor pengirim di tabel `User` (PostgreSQL).
-   - **Jika nomor TIDAK terdaftar**: Chat langsung **didrop** (diabaikan sepenuhnya, tidak ada akses guest).
-   - **Jika nomor terdaftar**: Mendapatkan role (`owner` atau `member`).
-4. Memasukkan pemrosesan ke **In-memory Queue** berdasarkan `chat_id` agar pesan diproses berurutan (mencegah double reply).
-5. Bot memicu indikator mengetik (`sendStateTyping`) secara otomatis.
-6. Bot mengirim request ke API Hermes dengan payload yang menyertakan data pengirim, tipe chat, role pengirim, dan system prompt yang mendikte batasan role.
-7. Setelah Hermes membalas, bot mengirim pesan balasan ke pengguna dengan behavior delay manusiawi (1.5s - 4s) dan membagi pesan jika melebihi 2000 karakter.
-8. Menyimpan percakapan ke tabel `ActivityLog` di database.
-
-#### **B. Group Chat Flow**
-1. Pesan diterima oleh WA Client.
-2. Filter checking: Pesan diabaikan jika berasal dari bot itu sendiri (`fromMe`).
-3. Bot memeriksa apakah pesan mengandung tag `#aii` (case-insensitive). Jika tidak, pesan didrop.
-4. Bot membersihkan tag `#aii` dari isi pesan sebelum dikirim ke Hermes.
-5. **Role Resolution**: Bot mencari nomor pengirim di database. Jika pengirim tidak terdaftar di DB, pesan langsung didrop.
-6. Memasukkan pemrosesan ke antrean (`enqueue`).
-7. Bot memicu indikator mengetik, menyusun instruksi context (termasuk quoted message jika membalas pesan lain).
-8. Mengirim data ke Hermes.
-9. Setelah menerima jawaban, bot mengirimkannya sebagai **quoted reply** ke pengirim asli dalam grup.
-10. Menyimpan percakapan ke tabel `ActivityLog`.
+- ⚡ **Pure & Lightweight Gateway**: 100% In-memory state (Zero DB/Redis). Konsumsi resource minimal (~150MB RAM runtime) dengan startup instan.
+- 👥 **Tag-Gated Group Response**: Bot hanya merespons di grup saat di-tag/mention (`@bot`) atau me-reply pesan bot oleh member yang diizinkan.
+- 🛡️ **Role-Based Access Control (RBAC)**: Memisahkan privilege `owner` (akses penuh toolset/terminal/filesystem) dan `member` (hanya chat umum, web search, image generation).
+- 💬 **Quoted Message Context Injection**: Secara otomatis menyertakan konteks pesan yang dikutip saat pengguna me-reply pesan lama.
+- ⏳ **Sequential Message Queue**: Mengantre pesan per `chat_id` untuk mencegah race condition respon AI.
+- 🚦 **In-Memory Rate Limiting & Deduplication**: Proteksi anti-spam pesan beruntun dan pencegahan eksekusi pesan duplikat (dedup window 1 menit).
+- ⌨️ **Anti-Ban Human Behavior**: Simulasi human typing indicator saat AI sedang memproses jawaban, pemecahan pesan panjang secara otomatis (maksimal 4000 karakter per bagian), dan desktop user-agent spoofing.
+- 🚀 **Hermes Outbound Push (`POST /send`)**: Endpoint aman dengan autentikasi `x-hermes-secret` agar Hermes AI dapat mengirim notifikasi terjadwal / proaktif ke WhatsApp.
+- 🐳 **Production Docker Multi-Stage**: Menggunakan Bun untuk kompilasi cepat dan Node.js 22 Slim dengan Chromium terintegrasi + `dumb-init` untuk mencegah zombie process.
 
 ---
 
-### 2. Outbound Message Flow (Push Notification / Reminder)
+## 🔑 Manajemen Akses & Peran (RBAC)
 
-1. Hermes Agent memutuskan untuk mengirim pesan terjadwal atau notifikasi.
-2. Hermes mengirim request `POST` ke gateway di endpoint `/send`.
-   - Header: `x-hermes-secret` wajib cocok dengan configuration secret.
-   - Body: `{ chat_id, message }`
-3. Gateway memvalidasi token rahasia tersebut.
-4. Gateway mengirimkan pesan ke WhatsApp menggunakan `client.sendMessage(chat_id, message)`.
+| Peran | Privilese | Berlaku di |
+|---|---|---|
+| **`owner`** | Akses penuh: Chat, Web search, Image generation, Akses Filesystem, Eksekusi Perintah Terminal | DM & Grup yang diizinkan |
+| **`member`** | Terbatas: Chat umum, Web search, Image generation *(Dilarang akses filesystem & terminal)* | Hanya Grup yang diizinkan |
 
----
-
-## 🔑 Manajemen Peran & Hak Akses (Access Rights / RBAC)
-
-Sistem menggunakan hak akses berbasis database PostgreSQL. Terdapat dua role utama yang dikirimkan ke Hermes untuk ditegakkan melalui system instruction:
-
-### 👑 1. **OWNER** (Akses Penuh / Full Access)
-* **Kewenangan**: Memiliki kendali mutlak atas bot dan server.
-* **Fitur**:
-  - Boleh melakukan semua perintah tanpa batas.
-  - Boleh mengubah konfigurasi agent secara realtime (system prompt, kepribadian, behavior).
-  - Boleh meminta agent melupakan instruksi sebelumnya (override system).
-  - Boleh melakukan operasi CRUD ke seluruh data.
-  - Memiliki akses penuh ke seluruh tools (web search, image generation, terminal, file system, execution command, dll).
-
-### 👥 2. **MEMBER** (Akses Terbatas / Limited Access)
-* **Kewenangan**: Hanya diizinkan untuk interaksi umum dan penggunaan tools dasar.
-* **Fitur**:
-  - Boleh chat biasa (diskusi, tanya-jawab).
-  - Boleh menggunakan tools umum seperti pencarian web (`web search`), pembuatan gambar (`image generation`), dan teks-ke-suara (`tts`).
-  - **DILARANG** mengubah konfigurasi agent, kepribadian, atau memodifikasi system prompt.
-  - **DILARANG** mengakses filesystem, terminal, atau menjalankan shell command di server.
-  - **DILARANG** mengunduh, menginstal, atau memodifikasi file apa pun di server.
-  - **Pencegahan**: Prompt sistem secara ketat menginstruksikan Hermes untuk menolak perintah sensitif dari member secara sopan, dan aturan ini kebal terhadap prompt injection.
+### Aturan Filtering:
+1. **Direct Message (DM)**:
+   - Hanya nomor yang terdaftar pada `OWNER_NUMBER` yang akan diproses oleh bot.
+   - Pesan dari nomor lain akan diabaikan secara otomatis.
+2. **Grup (Group Chat)**:
+   - Grup harus terdaftar pada `ALLOWED_GROUPS` (atau gunakan `*` untuk mengizinkan semua grup).
+   - Pengirim harus terdaftar pada `OWNER_NUMBER` (Role: `owner`) atau `ALLOWED_USERS` (Role: `member`).
+   - Bot hanya akan merespons jika nomor bot **di-mention / di-tag (`@bot`)** atau jika pesan **me-reply pesan bot**.
 
 ---
 
-## 🛠️ Fitur Utama Aplikasi
-
-1. **Anti-Ban Human Behavior**: Simulasi delay respons manusiawi (1.5s - 4.0s) sebelum membalas pesan, auto-typing loop, dan split pesan otomatis per baris baru jika melebihi batas karakter agar aman dari deteksi spam WhatsApp.
-2. **Sequential Message Queue**: Menggunakan antrean berbasis `Map` per `chat_id` untuk menghindari tabrakan state (race conditions) saat user mengirim pesan beruntun.
-3. **Database-Driven Users**: Otorisasi user dinamis (CRUD) langsung dari Admin Panel tanpa perlu restart aplikasi gateway.
-4. **WebSocket Real-time Broadcast**: Mengalirkan event status (QR code untuk scan, status koneksi: *connecting, qr, connected, disconnected*) secara langsung ke Admin Panel Web.
-5. **Nginx & Docker Ready**: Dilengkapi dengan konfigurasi Docker Compose multiservice (Database, Gateway App, Hermes Agent) dan Nginx reverse proxy.
-6. **Automatic Log Pruner**: Menghapus baris tabel log aktivitas (`ActivityLog`) yang berusia lebih dari 30 hari setiap 24 jam secara otomatis untuk menghemat ruang penyimpanan.
-
----
-
-## 📁 Struktur Folder Proyek
+## 📁 Struktur Direktori
 
 ```
 waBotAssistant/
-├── prisma/
-│   ├── schema.prisma         # Definisi skema database PostgreSQL
-│   └── seed.ts               # Script seeding untuk membuat akun admin default
 ├── src/
-│   ├── auth/
-│   │   └── roles.ts          # Definisi type Role ('owner' | 'member')
+│   ├── auth/                  # (Opsional) Custom authentication hooks
 │   ├── config/
-│   │   └── env.ts            # Loader & validasi environment variables (.env)
+│   │   └── env.ts             # Parser & validator konfigurasi environment (.env)
 │   ├── hermes/
-│   │   ├── adapter.ts        # Adapter Responses API & pembentuk prompt instruksi
-│   │   └── types.ts          # Type definition untuk request/response Hermes
+│   │   ├── adapter.ts         # HTTP client & payload formatter ke Hermes AI
+│   │   └── types.ts           # Type definitions payload Hermes
 │   ├── lib/
-│   │   └── prisma.ts         # Singleton PrismaClient dengan Postgres Driver Adapter
+│   │   └── rateLimiter.ts     # In-memory rate limiter & deduplication engine
 │   ├── queue/
-│   │   └── messageQueue.ts   # Mekanisme sequential queue berbasis Map per chat ID
+│   │   └── messageQueue.ts    # Sequential in-memory queue per chat_id
 │   ├── server/
-│   │   ├── adminAuth.ts      # JWT Authentication Middleware untuk Express
-│   │   ├── adminRouter.ts    # REST Endpoint Admin API (Users, Logs, Status)
-│   │   ├── pushEndpoint.ts   # Express server, REST API setup & endpoint /send
-│   │   └── wsServer.ts       # WebSocket server untuk broadcast status koneksi
-│   └── index.ts              # Entry point utama aplikasi (wiring & loop pruner)
-├── wa-admin-panel/           # Dashboard Web Next.js 16 (React, TailwindCSS)
-├── tsconfig.json             # Konfigurasi TypeScript global / IDE
-├── tsconfig.build.json       # Konfigurasi TypeScript khusus untuk production build
-├── docker-compose.yml        # Konfigurasi multi-container Docker
-├── Dockerfile                # Instruksi build container WA Gateway (Puppeteer-friendly)
-└── README.md                 # Dokumentasi proyek
+│   │   └── pushEndpoint.ts    # Express server: /health & /send (outbound push)
+│   ├── wa/
+│   │   ├── client.ts          # Inisialisasi WhatsApp Web client + Puppeteer
+│   │   ├── filters.ts         # Filter pesan DM & Group (tag/mention validation)
+│   │   └── reply.ts           # Typing indicator loop & message chunking
+│   └── index.ts               # Entrypoint utama bot
+├── .env.example               # Template environment variables
+├── .dockerignore              # File ignore build Docker
+├── config.yaml                # Konfigurasi Hermes AI Agent (model, tools, system prompt)
+├── docker-compose.yml         # Konfigurasi container hermes-agent + wa-gateway
+├── Dockerfile                 # Multi-stage Dockerfile (Bun builder + Node.js 22 runtime)
+├── entrypoint.sh              # Entrypoint script dengan dumb-init
+├── package.json               # Manifest dependensi & scripts
+├── tsconfig.json              # Konfigurasi TypeScript
+└── .github/workflows/
+    └── deploy.yml             # Pipeline CI/CD GitHub Actions
 ```
 
 ---
 
-## 🚀 Cara Menjalankan Aplikasi
+## 🔌 Spesifikasi API Endpoint
 
-### 1. Prasyarat (Prerequisites)
-* Docker dan Docker Compose terinstal di mesin Anda.
-* Akun WhatsApp untuk scan QR code.
+Bot mengekspos Express server pada port `4849` (dapat diubah via `EXPRESS_PORT`).
 
-### 2. Setup Environment Variables
-Salin berkas `.env.example` menjadi `.env` di root folder dan sesuaikan nilainya:
-```env
-DATABASE_URL="postgresql://admin:hermesbosferdi@postgres-db:5432/wagateway?schema=public"
-HERMES_API_URL="http://hermes-agent:8689/v1/responses"
-HERMES_API_KEY="your-hermes-api-key"
-HERMES_SECRET="your-push-secret"
-EXPRESS_PORT=4849
-JWT_SECRET="your-long-jwt-secret-key"
+### 1. Health Check
+Mengecek status ketersediaan gateway.
 
-# Kredensial untuk akun admin awal (seeding)
-ADMIN_SEED_USERNAME=admin
-ADMIN_SEED_PASSWORD=admin123
+- **URL**: `GET /health`
+- **Response**: `200 OK`
+```json
+{
+  "status": "ok",
+  "timestamp": "2026-09-04T06:15:00.000Z"
+}
 ```
-*Catatan: Jika menggunakan Docker Compose, alamat host database harus menunjuk ke nama service database (`postgres-db`) dan URL Hermes mengarah ke `hermes-agent`.*
+
+### 2. Push Outbound Message
+Digunakan oleh Hermes Agent atau sistem eksternal untuk mengirim pesan ke nomor/grup WhatsApp.
+
+- **URL**: `POST /send`
+- **Headers**:
+  - `Content-Type: application/json`
+  - `x-hermes-secret: <HERMES_SECRET_VALUE>`
+- **Request Body**:
+```json
+{
+  "chat_id": "628123456789@c.us",
+  "message": "Halo! Ini adalah notifikasi otomatis dari Hermes AI."
+}
+```
+> **Catatan format ID**:
+> - Nomor pribadi: `628123456789@c.us`
+> - Grup: `12036304xxxxxxxxxx@g.us`
+
+- **Response**:
+  - `200 OK`: `{"success": true}`
+  - `401 Unauthorized`: `{"success": false, "error": "Unauthorized"}`
+  - `400 Bad Request`: `{"success": false, "error": "Missing chat_id or message"}`
+  - `500 Internal Error`: `{"success": false, "error": "<pesan error>"}`
 
 ---
 
-### 📦 Metode A: Menggunakan Docker Compose (Direkomendasikan untuk Production)
+## ⚙️ Variabel Environment (.env)
 
-#### 1. Jalankan Seluruh Kontainer
-Gunakan Docker Compose untuk membangun dan menjalankan database, agen Hermes, serta WA Gateway secara latar belakang:
-```bash
-docker compose up -d --build
-```
-*(Proses migrasi database otomatis dijalankan oleh kontainer `wa-gateway` saat startup).*
+Salin `.env.example` ke `.env` dan sesuaikan nilainya:
 
-#### 2. Jalankan Database Seeding (Membuat Admin Awal)
-Setelah kontainer berjalan, eksekusi perintah *seed* di dalam kontainer `wa-gateway` untuk membuat akun admin default:
 ```bash
-docker compose exec wa-gateway npm run db:seed
+cp .env.example .env
 ```
+
+| Variabel | Tipe | Default | Keterangan |
+|---|---|---|---|
+| `HERMES_API_URL` | String | `http://wabot-hermes:8642/v1/responses` | URL endpoint Hermes Agent |
+| `HERMES_API_KEY` | String | *Wajib* | API Key untuk request ke Hermes Agent |
+| `HERMES_SECRET` | String | *Wajib* | Secret token untuk otorisasi `POST /send` |
+| `EXPRESS_PORT` | Number | `4849` | Port server Express |
+| `OWNER_NUMBER` | String | *Wajib* | Nomor WhatsApp pemilik (contoh: `628123456789,628987654321`) |
+| `ALLOWED_USERS` | String | `""` | Daftar nomor member yang diizinkan tag bot di grup (pisahkan koma) |
+| `ALLOWED_GROUPS` | String | `""` | ID grup yang diizinkan (pisahkan koma, atau isi `*` untuk semua) |
+| `PUPPETEER_EXECUTABLE_PATH` | String | `/usr/bin/chromium` | Path binary Chromium (otomatis di Docker) |
 
 ---
 
-### 💻 Metode B: Menjalankan secara Lokal/Manual (Development)
+## 🚀 Panduan Instalasi & Menjalankan
 
-#### 1. Jalankan Database PostgreSQL lokal Anda
-Pastikan PostgreSQL lokal Anda menyala dan sesuaikan `DATABASE_URL` di `.env` ke `localhost` (misal: `localhost:5432` / `localhost:5489`).
+### 1. Mode Development (Lokal)
 
-#### 2. Install Dependensi & Migrasi Database
+Pastikan [Bun](https://bun.sh) atau [Node.js v20+](https://nodejs.org) sudah terpasang.
+
 ```bash
-# Install dependensi utama
-npm install
+# 1. Masuk ke direktori projek
+cd waBotAssistant
 
-# Jalankan migrasi Prisma
-npx prisma migrate dev
+# 2. Install dependensi
+bun install
+# atau: npm install
 
-# Jalankan Database Seeding
-npm run db:seed
+# 3. Jalankan development server dengan auto-reload
+bun run dev
+# atau: npm run dev
 ```
 
-#### 3. Jalankan Aplikasi Gateway
-```bash
-# Jalankan mode development
-npm run dev
-
-# Atau compile dan jalankan mode production
-npm run build
-npm start
-```
+QR Code akan muncul di terminal. Scan menggunakan aplikasi WhatsApp di HP Anda.
 
 ---
 
-### 🖥️ 3. Jalankan Admin Panel Web (Next.js)
-Admin panel berjalan di folder terpisah. Masuk ke direktorinya, instal dependensi, lalu jalankan aplikasinya:
+### 2. Mode Production (Docker Compose)
+
+Pastikan Docker & Docker Compose sudah terpasang.
+
 ```bash
-cd wa-admin-panel
-npm install
-npm run dev
+# 1. Jalankan stack (hermes-agent + wa-gateway)
+docker compose up -d
+
+# 2. Pantau log untuk melakukan scan QR Code WhatsApp
+docker compose logs -f wa-gateway
 ```
-Buka browser di `http://localhost:3000` untuk membuka halaman login, masukkan kredensial admin Anda (`ADMIN_SEED_USERNAME` & `ADMIN_SEED_PASSWORD`), lalu scan QR Code WhatsApp yang tampil di dashboard untuk mengaktifkan bot!
+
+Setelah QR code di-scan dan status menunjukkan `[WA] Client ready!`, bot siap digunakan.
 
 ---
 
-## 🔄 Setup CI/CD (GitHub Actions)
+### 3. Deployment via Portainer
 
-Aplikasi ini dilengkapi dengan pipeline CI/CD otomatis pada berkas [.github/workflows/deploy.yml](file:///.github/workflows/deploy.yml) yang akan terpicu ketika ada perubahan yang di-push ke branch `production`.
+1. Buka dashboard **Portainer** $\rightarrow$ pilih environment Anda.
+2. Masuk ke menu **Stacks** $\rightarrow$ Klik **Add stack**.
+3. Beri nama stack (misal: `wabot-assistant`).
+4. Tempelkan isi file [docker-compose.yml](file:///c:/Users/ferdi/Documents/ferdinand_dev/PersonalProject/wa-projek/waBotAssistant/docker-compose.yml) ke Web editor.
+5. Pada bagian **Environment variables**, tambahkan variabel:
+   - `HERMES_API_KEY`
+   - `HERMES_SECRET`
+   - `OWNER_NUMBER`
+   - `ALLOWED_USERS`
+   - `ALLOWED_GROUPS`
+6. Klik **Deploy the stack**.
+7. Buka menu **Containers** $\rightarrow$ klik ikon **Logs** pada container `wabot-gateway` untuk melakukan scan QR Code.
 
-### 1. Konfigurasi Secrets di GitHub
-Masuk ke repositori GitHub Anda, buka **Settings > Secrets and variables > Actions**, lalu tambahkan Repository Secrets berikut:
+---
 
-* **Docker Hub (Build & Push)**
-  * `DOCKERHUB_USERNAME`: Username akun Docker Hub Anda.
-  * `DOCKERHUB_TOKEN`: Personal Access Token (PAT) dari Docker Hub Anda.
-* **VPS Deploy (SSH)**
-  * `SSH_HOST`: Alamat IP Publik atau Domain server VPS Anda.
-  * `SSH_USERNAME`: Username SSH server Anda (contoh: `root` atau `ubuntu`).
-  * `SSH_KEY`: Private Key SSH Anda (isi dari berkas `id_rsa`).
-  * `SSH_PORT`: Port SSH server Anda (default: `22` jika tidak didefinisikan).
+## 🔄 CI/CD & Deployment Otomatis
 
-### 2. Penyesuaian Path Server
-Pastikan Anda telah menyesuaikan direktori kerja proyek di server Anda pada berkas [.github/workflows/deploy.yml](file:///.github/workflows/deploy.yml) baris ke-45:
-```yaml
-script: |
-  cd /path/to/your/project-on-server
-```
-Ubah `/path/to/your/project-on-server` dengan path direktori folder proyek Anda di VPS tempat berkas `docker-compose.yml` berada.
+Projek ini dilengkapi GitHub Actions workflow (`.github/workflows/deploy.yml`) yang otomatis melakukan build Docker image, push ke Docker Hub, dan deploy ke VPS via SSH saat push ke branch `production`.
 
-### 3. Eksekusi
-Lakukan push perubahan ke branch `production` untuk memulai alur otomatisasi deployment:
-```bash
-git push origin production
-```
+### Konfigurasi GitHub Repository Secrets:
+
+Tambahkan secrets berikut pada repository GitHub (**Settings $\rightarrow$ Secrets and variables $\rightarrow$ Actions**):
+
+- `DOCKERHUB_USERNAME`: Username Docker Hub Anda
+- `DOCKERHUB_TOKEN`: Personal Access Token Docker Hub
+- `SSH_HOST`: IP Publik / Domain VPS
+- `SSH_USERNAME`: User login VPS (misal: `root` atau `ubuntu`)
+- `SSH_KEY`: Private SSH Key (RSA / ED25519)
+- `SSH_PORT`: Port SSH (default: `22`)
+
+---
+
+## ❓ Troubleshooting & FAQ
+
+<details>
+<summary><b>1. QR Code tidak terbaca / terpotong di Terminal?</b></summary>
+
+- Perbesar ukuran jendela terminal Anda atau perkecil font terminal.
+- Jika menggunakan Docker, gunakan perintah `docker compose logs wa-gateway` dengan ukuran terminal penuh.
+</details>
+
+<details>
+<summary><b>2. Apakah sesi WhatsApp tersimpan setelah container di-restart?</b></summary>
+
+Ya. Sesi WhatsApp disimpan dalam Docker volume `wabot-wa-auth` (`/app/.wwebjs_auth`). Sesi tidak akan hilang selama volume tersebut tidak dihapus.
+</details>
+
+<details>
+<summary><b>3. Bagaimana cara menambahkan anggota baru ke grup bot?</b></summary>
+
+Tambahkan nomor WhatsApp anggota ke variabel `ALLOWED_USERS` pada file `.env` (atau di Portainer Stack Environment), kemudian restart/update stack container.
+</details>
+
+<details>
+<summary><b>4. Error Puppeteer / Chromium zombie processes?</b></summary>
+
+Dockerfile telah menggunakan `dumb-init` sebagai PID 1 dan flag Chromium anti-sandbox/no-zygote yang secara otomatis membersihkan zombie process dan mencegah memory leak.
+</details>
+
+---
+
+## 📄 Lisensi
+
+Projek ini dilisensikan di bawah lisensi [ISC](LICENSE).
